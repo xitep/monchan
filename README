@@ -9,10 +9,10 @@ Usage:
     # monchan will print some timing information on debug level
     $ export RUST_LOG=monchan=debug
 
-    # produce 100k small messages (to each available topic partition)
+    # produce 100k small messages (to each available topic)
     $ ./target/release/monchan --brokers 'localhost:9092' produce
 
-    # produce 100k small messages to each partition of the specified topics only
+    # produce 100k small messages to each of the specified topics only
     $ ./target/release/monchan --brokers 'localhost:9092' --topics 'my-topic-1,my-topic-2' produce
 
     # print offsets of all available topic partitions
