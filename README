@@ -2,3 +2,19 @@ An example program to play around with kafka-rust:
 
   https://github.com/spicavigo/kafka-rust
 
+Usage:
+
+    $ cargo build --release
+
+    # monchan will print some timing information on debug level
+    $ export RUST_LOG=monchan=debug
+
+    # produce 100k small messages (to each available topic partition)
+    $ ./target/release/monchan --brokers 'localhost:9092' produce
+
+    # produce 100k small messages to each partition of the specified topics only
+    $ ./target/release/monchan --brokers 'localhost:9092' --topics 'my-topic-1,my-topic-2' produce
+
+    # print offsets of all available topic partitions
+    $ ./target/release/monchan --brokers 'localhost:9092' offsets
+
