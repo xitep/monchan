@@ -11,8 +11,8 @@ byteorder = "*"
 stopwatch = "*"
 
 [dependencies.kafka]
-#version = "*"
-path = "../rust/kafka-rust"
+version = "*"
+#path = "../rust/kafka-rust"
 
 [profile.release]
 opt-level = 3
