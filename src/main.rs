@@ -1,5 +1,3 @@
-#![feature(convert)]
-
 extern crate kafka;
 extern crate getopts;
 #[macro_use]
@@ -10,6 +8,7 @@ extern crate stopwatch;
 
 use std::cmp;
 use std::env;
+use std::iter::repeat;
 use kafka::client::KafkaClient;
 use byteorder::WriteBytesExt;
 use stopwatch::Stopwatch;
@@ -26,7 +25,8 @@ fn main() {
     };
 
     for cmd in cmds {
-        match cmd.as_str() {
+        let cmd: &str = &cmd;
+        match cmd {
             "offsets" => {
                 if let Err(e) = print_offsets(&cfg) {
                     println!("error: {:?}", e)
@@ -34,6 +34,11 @@ fn main() {
             }
             "produce" => {
                 if let Err(e) = produce_data(&cfg) {
+                    println!("error: {:?}", e);
+                }
+            }
+            "consume" => {
+                if let Err(e) = consume_data(&cfg) {
                     println!("error: {:?}", e);
                 }
             }
@@ -163,4 +168,57 @@ fn encode(n: i64) -> Vec<u8> {
     let mut wrt = Vec::with_capacity(8);
     wrt.write_i64::<byteorder::BigEndian>(n).unwrap();
     wrt
+}
+
+fn consume_data(cfg: &Config) -> Result<(), Error> {
+    let mut client = try!(cfg.new_client());
+
+    let topic_partitions = client.topic_partitions.clone();
+
+    for (topic, partitions) in topic_partitions {
+        let mut offsets: Vec<i64> = {
+            let max_id = partitions.iter().fold(0, |a, b| cmp::max(a, *b));
+            repeat(0).take((max_id + 1) as usize).collect()
+        };
+
+        let sw = Stopwatch::start_new();
+        let (mut n_bytes, mut n_msgs, mut n_errors) = (0u64, 0u64, 0u64);
+        loop {
+            let mut reqs = Vec::with_capacity(partitions.len());
+            for p in &partitions {
+                reqs.push(kafka::utils::TopicPartitionOffset{
+                    topic: topic.clone(),
+                    partition: *p,
+                    offset: offsets[*p as usize],
+                });
+            }
+
+            let msgs = try!(client.fetch_messages_multi(reqs));
+            if msgs.is_empty() {
+                break;
+            }
+
+            for msg in msgs {
+                trace!("msg.topic: {}, msg.partition: {}, msg.offset: {}",
+                       msg.topic, msg.partition, msg.offset);
+                match msg.error {
+                    Some(_) => {
+                        n_errors += 1;
+                    }
+                    None => {
+                        n_msgs += 1;
+                        n_bytes += msg.message.len() as u64;
+                        offsets[msg.partition as usize] += 1;
+                    }
+                }
+            }
+        }
+        let elapsed_ms = sw.elapsed_ms();
+
+        let total = n_msgs + n_errors;
+        debug!("topic: {}, total msgs: {} (errors: {}), bytes: {}, elapsed: {}ms ==> msg/s: {:.2}",
+               topic, total, n_errors, n_bytes, elapsed_ms,
+               (1000 * total) as f64 / elapsed_ms as f64);
+    }
+    Ok(())
 }
