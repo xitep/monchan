@@ -10,7 +10,6 @@ use std::cmp;
 use std::env;
 use std::iter::repeat;
 use kafka::client::KafkaClient;
-use byteorder::WriteBytesExt;
 use stopwatch::Stopwatch;
 
 fn main() {
@@ -53,6 +52,9 @@ fn main() {
 struct Config {
     brokers: Vec<String>,
     topics: Vec<String>,
+
+    produce_msg_per_topic: u32,
+    produce_bytes_per_msg: u32,
 }
 
 impl Config {
@@ -63,6 +65,8 @@ impl Config {
         opts.optflag("h", "help", "Print this help screen");
         opts.optopt("", "brokers", "Specify brokers (comma separated)", "HOSTS");
         opts.optopt("", "topics", "Specify topics (comma separated)", "TOPICS");
+        opts.optopt("", "produce-msg-per-topic", "Produce N messages per topic", "N");
+        opts.optopt("", "produce-bytes-per-msg", "Produce N bytes per message", "N");
         let matches = match opts.parse(&args[1..]) {
             Ok(m) => m,
             Err(e) => return Err(e.to_string()),
@@ -80,6 +84,16 @@ impl Config {
             topics: matches.opt_str("topics")
                 .map(|s| s.split(',').map(|s| s.trim().to_owned()).collect())
                 .unwrap_or_else(|| vec![]),
+            produce_msg_per_topic:
+            try!(matches.opt_str("produce-msg-per-topic")
+                 .unwrap_or_else(|| "100000".to_owned())
+                 .parse::<u32>()
+                 .map_err(|e| format!("not a number: {}", e))),
+            produce_bytes_per_msg:
+            try!(matches.opt_str("produce-bytes-per-msg")
+                 .unwrap_or_else(|| "10".to_owned())
+                 .parse::<u32>()
+                 .map_err(|e| format!("not a number: {}", e))),
         };
         let cmds = if matches.free.is_empty() {
             vec!["offsets".to_owned()]
@@ -141,16 +155,19 @@ fn print_offsets(cfg: &Config) -> Result<(), Error> {
 }
 
 fn produce_data(cfg: &Config) -> Result<(), Error> {
+    debug!("producing data to: {:?}", cfg);
+
+    let msg: Vec<u8> = (0..cfg.produce_bytes_per_msg).map(|v| (v % 256) as u8).collect();
+
     let mut client = try!(cfg.new_client());
 
-    let msg_per_topic = 100_000;
-    let msg_total = msg_per_topic*client.topic_partitions.len();
+    let msg_total = cfg.produce_msg_per_topic as usize * client.topic_partitions.len();
     let mut data = Vec::with_capacity(msg_total);
-    for i in (0 .. msg_per_topic) {
+    for _ in 0..cfg.produce_msg_per_topic {
         for topic in client.topic_partitions.keys().cloned() {
             data.push(kafka::utils::ProduceMessage{
                 topic: topic,
-                message: encode(i as i64),
+                message: msg.clone(),
             });
         }
     }
@@ -162,12 +179,6 @@ fn produce_data(cfg: &Config) -> Result<(), Error> {
            msg_total, elapsed_ms, (1000 * msg_total) as f64 / elapsed_ms as f64);
 
     Ok(())
-}
-
-fn encode(n: i64) -> Vec<u8> {
-    let mut wrt = Vec::with_capacity(8);
-    wrt.write_i64::<byteorder::BigEndian>(n).unwrap();
-    wrt
 }
 
 fn consume_data(cfg: &Config) -> Result<(), Error> {
