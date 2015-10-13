@@ -191,6 +191,24 @@ fn consume_data(cfg: &Config) -> Result<(), Error> {
             let max_id = partitions.iter().fold(0, |a, b| cmp::max(a, *b));
             repeat(0).take((max_id + 1) as usize).collect()
         };
+        // ~ initialize start offsets
+        {
+            let start_offset = try!(client.fetch_topic_offset(topic.clone(), -2));
+            match start_offset.get(&topic) {
+                Some(poffs) => {
+                    for poff in poffs {
+                        offsets[poff.partition as usize] = poff.offset;
+                        debug!("{}:{} => start_offset: {}",
+                               &topic, poff.partition, poff.offset);
+                    }
+                },
+                None => {
+                    debug!("Could not determined earliest offset for topic: {}",
+                           topic.clone());
+                    continue;
+                }
+            };
+        }
 
         let sw = Stopwatch::start_new();
         let (mut n_bytes, mut n_msgs, mut n_errors) = (0u64, 0u64, 0u64);
@@ -220,6 +238,13 @@ fn consume_data(cfg: &Config) -> Result<(), Error> {
                         n_msgs += 1;
                         n_bytes += msg.message.len() as u64;
                         offsets[msg.partition as usize] += 1;
+                        if n_msgs % 100000 == 0 {
+                            let elapsed_ms = sw.elapsed_ms();
+                            let total = n_msgs + n_errors;
+                            debug!("topic: {}, total msgs: {} (errors: {}), bytes: {}, elapsed: {}ms ==> msg/s: {:.2}",
+                                   topic, total, n_errors, n_bytes, elapsed_ms,
+                                   (1000 * total) as f64 / elapsed_ms as f64);
+                        }
                     }
                 }
             }
