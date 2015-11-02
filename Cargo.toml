@@ -13,7 +13,7 @@ stopwatch = "*"
 [dependencies.kafka]
 #path = "../kafka-rust"
 git = "https://github.com/spicavigo/kafka-rust.git"
-branch = "master"
+branch = "xitep/fetch-offset-api"
 
 [profile.release]
 opt-level = 3

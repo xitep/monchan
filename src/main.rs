@@ -12,7 +12,7 @@ use std::env;
 use std::iter::repeat;
 use std::str;
 
-use kafka::client::{KafkaClient, Compression};
+use kafka::client::{KafkaClient, Compression, FetchOffset};
 use stopwatch::Stopwatch;
 
 fn main() {
@@ -142,8 +142,8 @@ fn print_offsets(cfg: &Config) -> Result<(), Error> {
     debug!("printing offsets for: {:?}", cfg);
 
     let mut client = try!(cfg.new_client());
-    let topics = client.topic_partitions.keys().cloned().collect();
-    let offs = try!(client.fetch_offsets(topics, -1));
+    let topics: Vec<String> = client.topic_partitions.keys().cloned().collect();
+    let offs = try!(client.fetch_offsets(&topics, FetchOffset::Latest));
     if offs.is_empty() {
         return Ok(());
     }
@@ -161,7 +161,7 @@ fn print_offsets(cfg: &Config) -> Result<(), Error> {
 
         offsets.sort_by(|a, b| a.partition.cmp(&b.partition));
         for off in offsets {
-            println!("{:3$} {:>2} {:>12}", topic, off.partition, off.offset, topic_width);
+            println!("{:3$} {:>2} {:>12}", topic, off.partition, off.offset.unwrap_or(-1), topic_width);
         }
     }
     Ok(())
@@ -206,21 +206,23 @@ fn consume_data(cfg: &Config) -> Result<(), Error> {
         };
         // ~ initialize start offsets
         {
-            let start_offset = try!(client.fetch_topic_offset(topic.clone(), -2));
-            match start_offset.get(&topic) {
-                Some(poffs) => {
-                    for poff in poffs {
-                        offsets[poff.partition as usize] = poff.offset;
-                        debug!("{}:{} => start_offset: {}",
-                               &topic, poff.partition, poff.offset);
+            let start_offset = try!(client.fetch_topic_offset(&topic, FetchOffset::Earliest));
+            if start_offset.is_empty() {
+                debug!("Could not determined earliest offset for topic: {}", topic);
+            } else {
+                for poff in start_offset {
+                    match poff.offset {
+                        Ok(off) => offsets[poff.partition as usize] = off,
+                        Err(ref e) => {
+                            offsets[poff.partition as usize] = -1;
+                            warn!("{}:{} => error on fetching offset: {}",
+                                  &topic, poff.partition, e);
+                        }
                     }
-                },
-                None => {
-                    debug!("Could not determined earliest offset for topic: {}",
-                           topic.clone());
-                    continue;
+                    debug!("{}:{} => start_offset: {:?}",
+                           &topic, poff.partition, poff.offset);
                 }
-            };
+            }
         }
 
         let sw = Stopwatch::start_new();
@@ -228,11 +230,14 @@ fn consume_data(cfg: &Config) -> Result<(), Error> {
         loop {
             let mut reqs = Vec::with_capacity(partitions.len());
             for p in &partitions {
-                reqs.push(kafka::utils::TopicPartitionOffset{
-                    topic: topic.clone(),
-                    partition: *p,
-                    offset: offsets[*p as usize],
-                });
+                let off = offsets[*p as usize];
+                if off >= 0 {
+                    reqs.push(kafka::utils::TopicPartitionOffset{
+                        topic: topic.clone(),
+                        partition: *p,
+                        offset: off
+                    });
+                }
             }
 
             let msgs = try!(client.fetch_messages_multi(reqs));
@@ -259,6 +264,7 @@ fn consume_data(cfg: &Config) -> Result<(), Error> {
                         n_msgs += 1;
                         n_bytes += msg.message.len() as u64;
                         offsets[msg.partition as usize] += 1;
+
                         if n_msgs % 100000 == 0 {
                             let elapsed_ms = sw.elapsed_ms();
                             let total = n_msgs + n_errors;
@@ -298,7 +304,7 @@ fn test_produce_consume_integration(cfg: &Config) -> Result<(), Error> {
         };
 
         // ~ remeber the current offsets
-        let init_offsets = try!(client.fetch_offsets(topics.iter().cloned().collect(), -1));
+        let init_offsets = try!(client.fetch_offsets(topics, FetchOffset::Latest));
         trace!("init_offsets: {:#?}", init_offsets);
 
         // ~ send the messages
@@ -338,7 +344,7 @@ fn test_produce_consume_integration(cfg: &Config) -> Result<(), Error> {
                             kafka::utils::TopicPartitionOffset {
                                 topic: topic.clone(),
                                 partition: po.partition,
-                                offset: po.offset,
+                                offset: po.offset.unwrap(),
                             });
             }
         }
