@@ -145,10 +145,8 @@ fn print_offsets(cfg: &Config) -> Result<(), Error> {
         i += 1;
 
         offsets.sort_by(|a, b| a.partition.cmp(&b.partition));
-        let mut topic: &str = &topic;
         for off in offsets {
             println!("{:3$} {:>2} {:>12}", topic, off.partition, off.offset, topic_width);
-            topic = "";
         }
     }
     Ok(())
