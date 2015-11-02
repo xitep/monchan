@@ -11,8 +11,10 @@ byteorder = "*"
 stopwatch = "*"
 
 [dependencies.kafka]
-version = "*"
-#path = "../rust/kafka-rust"
+#version = "*"
+#path = "../kafka-rust"
+git = "https://github.com/spicavigo/kafka-rust.git"
+branch = "xitep/fetch-offset-api"
 
 [profile.release]
 opt-level = 3
