@@ -118,7 +118,7 @@ impl Config {
         if self.topics.is_empty() {
             try!(client.load_metadata_all());
         } else {
-            try!(client.load_metadata(self.topics.iter().cloned().collect()));
+            try!(client.load_metadata(&self.topics[..]));
         }
         Ok(client)
     }

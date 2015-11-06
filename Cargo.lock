@@ -5,7 +5,7 @@ dependencies = [
  "byteorder 0.4.2 (registry+https://github.com/rust-lang/crates.io-index)",
  "env_logger 0.3.2 (registry+https://github.com/rust-lang/crates.io-index)",
  "getopts 0.2.14 (registry+https://github.com/rust-lang/crates.io-index)",
- "kafka 0.1.6 (git+https://github.com/spicavigo/kafka-rust.git?branch=xitep/fetch-offset-api)",
+ "kafka 0.1.6 (git+https://github.com/xitep/kafka-rust.git?branch=xitep/experimental-changes)",
  "log 0.3.3 (registry+https://github.com/rust-lang/crates.io-index)",
  "stopwatch 0.0.6 (registry+https://github.com/rust-lang/crates.io-index)",
 ]
@@ -26,11 +26,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 dependencies = [
  "memchr 0.1.7 (registry+https://github.com/rust-lang/crates.io-index)",
 ]
-
-[[package]]
-name = "byteorder"
-version = "0.3.13"
-source = "registry+https://github.com/rust-lang/crates.io-index"
 
 [[package]]
 name = "byteorder"
@@ -72,11 +67,11 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 [[package]]
 name = "kafka"
 version = "0.1.6"
-source = "git+https://github.com/spicavigo/kafka-rust.git?branch=xitep/fetch-offset-api#ac6f34ef473df56b3096bc89942d193646b61acf"
+source = "git+https://github.com/xitep/kafka-rust.git?branch=xitep/experimental-changes#20bdb40576b869a9477f8806f11c9ca966cf36f0"
 dependencies = [
- "byteorder 0.3.13 (registry+https://github.com/rust-lang/crates.io-index)",
+ "byteorder 0.4.2 (registry+https://github.com/rust-lang/crates.io-index)",
  "flate2 0.2.11 (registry+https://github.com/rust-lang/crates.io-index)",
- "libc 0.1.12 (registry+https://github.com/rust-lang/crates.io-index)",
+ "libc 0.2.1 (registry+https://github.com/rust-lang/crates.io-index)",
  "num 0.1.27 (registry+https://github.com/rust-lang/crates.io-index)",
  "pkg-config 0.3.6 (registry+https://github.com/rust-lang/crates.io-index)",
 ]
