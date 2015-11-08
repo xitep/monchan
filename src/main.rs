@@ -10,7 +10,6 @@ extern crate stopwatch;
 use std::cmp;
 use std::collections::HashMap;
 use std::env;
-use std::iter::repeat;
 use std::str;
 use std::thread;
 
@@ -271,11 +270,16 @@ fn consume_data(cfg: &Config) -> Result<(), Error> {
     };
 
     for (topic, partitions) in topic_partitions {
-        let mut offsets: Vec<i64> = {
-            let max_id = partitions.iter().fold(0, |a, b| cmp::max(a, *b));
-            repeat(0).take((max_id + 1) as usize).collect()
+        // ~ keep a table of prepared (topic-partition) requests
+        let mut reqs: Vec<kafka::utils::TopicPartitionOffset> = {
+            let max = partitions.iter().fold(0, |a, b| cmp::max(a, *b)) + 1;
+            let mut v = Vec::with_capacity((max + 1) as usize);
+            for i in 0..max {
+                v.push(kafka::utils::TopicPartitionOffset::new(&topic, i as i32, -1));
+            }
+            v
         };
-        // ~ initialize start offsets
+        // ~ initialize the start-offsets in the preprared requests
         {
             let start_offset = try!(client.fetch_topic_offset(&topic, FetchOffset::Earliest));
             if start_offset.is_empty() {
@@ -283,35 +287,23 @@ fn consume_data(cfg: &Config) -> Result<(), Error> {
             } else {
                 for poff in start_offset {
                     match poff.offset {
-                        Ok(off) => offsets[poff.partition as usize] = off,
+                        Ok(off) => {
+                            reqs[poff.partition as usize].offset = off;
+                            debug!("{}:{} => start_offset: {:?}", &topic, poff.partition, poff.offset);
+                        }
                         Err(ref e) => {
-                            offsets[poff.partition as usize] = -1;
-                            warn!("{}:{} => error on fetching offset: {}",
-                                  &topic, poff.partition, e);
+                            warn!("{}:{} => error on fetching offset: {}", &topic, poff.partition, e);
                         }
                     }
-                    debug!("{}:{} => start_offset: {:?}",
-                           &topic, poff.partition, poff.offset);
                 }
             }
         }
 
+        // ~ now request all the data from the topic
         let sw = Stopwatch::start_new();
         let (mut n_bytes, mut n_msgs, mut n_errors) = (0u64, 0u64, 0u64);
         loop {
-            let mut reqs = Vec::with_capacity(partitions.len());
-            for p in &partitions {
-                let off = offsets[*p as usize];
-                if off >= 0 {
-                    reqs.push(kafka::utils::TopicPartitionOffset{
-                        topic: &topic,
-                        partition: *p,
-                        offset: off
-                    });
-                }
-            }
-
-            let msgs = try!(client.fetch_messages_multi(reqs));
+            let msgs = try!(client.fetch_messages_multi(reqs.iter().filter(|req| req.offset != -1)));
             if msgs.is_empty() {
                 break;
             }
@@ -334,7 +326,7 @@ fn consume_data(cfg: &Config) -> Result<(), Error> {
 
                         n_msgs += 1;
                         n_bytes += msg.message.len() as u64;
-                        offsets[msg.partition as usize] += 1;
+                        reqs[msg.partition as usize].offset += 1;
 
                         if n_msgs % 100000 == 0 {
                             let elapsed_ms = sw.elapsed_ms();
