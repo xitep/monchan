@@ -9,6 +9,7 @@ log = "*"
 env_logger = "*"
 byteorder = "*"
 stopwatch = "*"
+time = "*"
 
 [dependencies.kafka]
 #path = "../kafka-rust"

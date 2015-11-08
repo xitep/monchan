@@ -17,7 +17,10 @@ Usage:
     $ ./target/release/monchan --brokers 'localhost:9092' --topics 'my-topic-1,my-topic-2' produce
 
     # print offsets of all available topic partitions
-    $ ./target/release/monchan --brokers 'localhost:9092' offsets
+    $ ./target/release/monchan --brokers 'localhost:9092' dump-offsets
+
+    # print periodically a table of partition offsets for the specified topic
+    $ ./target/release/monchan --brokers 'localhost:9092' --topics my-topic follow-offsets
 
     # consume a topic as fast as possible
     $ ./target/releease/monchan --brokers 'localhost:9092' --topics 'my-topic-1' consume

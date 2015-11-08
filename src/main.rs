@@ -1,3 +1,4 @@
+extern crate time;
 extern crate kafka;
 extern crate getopts;
 #[macro_use]
@@ -11,6 +12,7 @@ use std::collections::HashMap;
 use std::env;
 use std::iter::repeat;
 use std::str;
+use std::thread;
 
 use kafka::client::{KafkaClient, Compression, FetchOffset};
 use stopwatch::Stopwatch;
@@ -29,7 +31,8 @@ fn main() {
     for cmd in cmds {
         let cmd: &str = &cmd;
         let res = match cmd {
-            "dump-offsets" => print_offsets(&cfg),
+            "follow-offsets" => follow_offsets(&cfg),
+            "dump-offsets" => dump_offsets(&cfg),
             "produce" => produce_data(&cfg),
             "consume" => consume_data(&cfg),
             "test-produce-consume-integration" => test_produce_consume_integration(&cfg),
@@ -105,7 +108,7 @@ impl Config {
             dump_consumed: matches.opt_present("dump-consumed"),
         };
         let cmds = if matches.free.is_empty() {
-            vec!["offsets".to_owned()]
+            vec!["dump-offsets".to_owned()]
         } else {
             matches.free
         };
@@ -115,10 +118,14 @@ impl Config {
     fn new_client(&self) -> Result<KafkaClient, Error> {
         let mut client = KafkaClient::new(self.brokers.iter().cloned().collect());
         client.set_compression(self.compression);
-        if self.topics.is_empty() {
-            try!(client.load_metadata_all());
-        } else {
-            try!(client.load_metadata(&self.topics[..]));
+        try!(client.load_metadata_all());
+
+        if !self.topics.is_empty() {
+            for topic in &self.topics {
+                if !client.topic_partitions.contains_key(topic) {
+                    return Err(Error::Other(format!("No such topic: {}", topic)));
+                }
+            }
         }
         Ok(client)
     }
@@ -138,11 +145,60 @@ impl<'a> From<&'a str> for Error {
     fn from(s: &'a str) -> Self { Error::Other(s.to_owned()) }
 }
 
-fn print_offsets(cfg: &Config) -> Result<(), Error> {
-    debug!("printing offsets for: {:?}", cfg);
+fn follow_offsets(cfg: &Config)-> Result<(), Error> {
+    use std::io::stdout;
+    use std::fmt::Write;
+
+    debug!("following offsets for: {:?}", cfg);
+
+
+    if cfg.topics.len() != 1 {
+        return Err(Error::from("Following offsets is only supported for exactly one topic!"));
+    }
 
     let mut client = try!(cfg.new_client());
-    let topics: Vec<String> = client.topic_partitions.keys().cloned().collect();
+
+    let mut out = String::with_capacity(160);
+    let mut stdout = stdout();
+    let topic = &cfg.topics[0];
+
+    loop {
+        let now = time::now();
+        let mut offs = try!(client.fetch_topic_offset(topic, FetchOffset::Latest));
+        offs.sort_by(|a, b| a.partition.cmp(&b.partition));
+        debug!("fetched offsets: {:?}", offs);
+
+        out.clear();
+        let _ = write!(out, "{}", now.strftime("%H:%M:%S").unwrap());
+        for off in offs {
+            let _ = match off.offset {
+                Ok(o) => write!(out, " {:>10}", o),
+                Err(_) => write!(out, " {:>10}", "ERR"),
+            };
+        }
+        let _ = write!(out, "\n");
+
+        {
+            use std::io::Write;
+            let _ = stdout.write_all(out.as_bytes());
+        }
+
+        {
+            use std::time;
+            thread::sleep(time::Duration::from_millis(1000));
+        }
+    }
+}
+
+fn dump_offsets(cfg: &Config) -> Result<(), Error> {
+    debug!("dumping offsets for: {:?}", cfg);
+
+    let mut client = try!(cfg.new_client());
+    let topics: Vec<String> = if cfg.topics.is_empty() {
+        client.topic_partitions.keys().cloned().collect()
+    } else {
+        cfg.topics.clone()
+    };
     let offs = try!(client.fetch_offsets(&topics, FetchOffset::Latest));
     if offs.is_empty() {
         return Ok(());
@@ -173,12 +229,17 @@ fn produce_data(cfg: &Config) -> Result<(), Error> {
     let msg: Vec<u8> = (0..cfg.produce_bytes_per_msg).map(|v| (v % 256) as u8).collect();
 
     let mut client = try!(cfg.new_client());
+    let topics: Vec<String> = if cfg.topics.is_empty() {
+        client.topic_partitions.keys().cloned().collect()
+    } else {
+        cfg.topics.clone()
+    };
 
-    let msg_total = cfg.produce_msg_per_topic as usize * client.topic_partitions.len();
+    let msg_total = cfg.produce_msg_per_topic as usize * topics.len();
     let mut data = Vec::with_capacity(msg_total);
     for _ in 0..cfg.produce_msg_per_topic {
-        for topic in client.topic_partitions.keys().cloned() {
-            data.push(kafka::utils::ProduceMessage{
+        for topic in topics.iter() {
+            data.push(kafka::utils::ProduceMessage {
                 topic: topic,
                 message: msg.clone(),
             });
@@ -197,7 +258,17 @@ fn produce_data(cfg: &Config) -> Result<(), Error> {
 fn consume_data(cfg: &Config) -> Result<(), Error> {
     let mut client = try!(cfg.new_client());
 
-    let topic_partitions = client.topic_partitions.clone();
+    let topic_partitions = if cfg.topics.is_empty() {
+        client.topic_partitions.clone()
+    } else {
+        let mut m = HashMap::new();
+        for topic in &cfg.topics {
+            if let Some(partitions) = client.topic_partitions.get(&topic[..]) {
+                m.insert(topic.clone(), partitions.clone());
+            };
+        }
+        m
+    };
 
     for (topic, partitions) in topic_partitions {
         let mut offsets: Vec<i64> = {
@@ -233,7 +304,7 @@ fn consume_data(cfg: &Config) -> Result<(), Error> {
                 let off = offsets[*p as usize];
                 if off >= 0 {
                     reqs.push(kafka::utils::TopicPartitionOffset{
-                        topic: topic.clone(),
+                        topic: &topic,
                         partition: *p,
                         offset: off
                     });
@@ -297,7 +368,7 @@ fn test_produce_consume_integration(cfg: &Config) -> Result<(), Error> {
             let mut msgs = Vec::with_capacity(topics.len() * msg_per_topic as usize);
             for topic in topics {
                 for _ in 0..msg_per_topic {
-                    msgs.push(kafka::utils::ProduceMessage { topic: topic.to_owned(), message: sent_msg.to_owned() });
+                    msgs.push(kafka::utils::ProduceMessage { topic: topic, message: sent_msg.to_owned() });
                 }
             }
             msgs
@@ -322,7 +393,7 @@ fn test_produce_consume_integration(cfg: &Config) -> Result<(), Error> {
                 *v = *v + 1;
                 continue;
             }
-            msgs_per_topic.insert(msg.topic.clone(), 1);
+            msgs_per_topic.insert(msg.topic, 1);
         }
         for (_, v) in msgs_per_topic {
             assert_eq!(v, msg_per_topic);
@@ -338,13 +409,13 @@ fn test_produce_consume_integration(cfg: &Config) -> Result<(), Error> {
                           start_offsets: HashMap<String, Vec<kafka::utils::PartitionOffset>>)
                           -> kafka::error::Result<Vec<kafka::utils::TopicMessage>> {
         let mut offs = HashMap::new();
-        for (topic, pos) in start_offsets {
+        for (topic, pos) in &start_offsets {
             for po in pos {
                 offs.insert(format!("{}-{}", topic, po.partition),
                             kafka::utils::TopicPartitionOffset {
-                                topic: topic.clone(),
+                                topic: &topic,
                                 partition: po.partition,
-                                offset: po.offset.unwrap(),
+                                offset: po.offset.clone().unwrap(),
                             });
             }
         }
@@ -352,25 +423,17 @@ fn test_produce_consume_integration(cfg: &Config) -> Result<(), Error> {
         let mut resp = Vec::new();
         loop {
             // ~ now fetch the messages and verify we could read them back
-            let mut reqs = vec![];
-            for (_, off) in &offs {
-                reqs.push(kafka::utils::TopicPartitionOffset {
-                    topic: off.topic.clone(),
-                    partition: off.partition,
-                    offset: off.offset,
-                });
+            let msgs = {
+                let reqs: Vec<_> = offs.values().collect();
+                trace!("Fetching messages for: {:#?}", reqs);
+                try!(client.fetch_messages_multi(reqs))
+            };
+            if msgs.is_empty() {
+                return Ok(resp);
             }
-
-            trace!("Fetching messages for: {:#?}", reqs);
-            match client.fetch_messages_multi(reqs) {
-                Err(e) => return Err(e),
-                Ok(ref msgs) if msgs.is_empty() => return Ok(resp),
-                Ok(msgs) => {
-                    for msg in msgs {
-                        offs.get_mut(&format!("{}-{}", msg.topic, msg.partition)).unwrap().offset += 1;
-                        resp.push(msg);
-                    }
-                }
+            for msg in msgs {
+                offs.get_mut(&format!("{}-{}", msg.topic, msg.partition)).unwrap().offset += 1;
+                resp.push(msg);
             }
         }
     }
