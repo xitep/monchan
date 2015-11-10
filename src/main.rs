@@ -117,6 +117,7 @@ impl Config {
     fn new_client(&self) -> Result<KafkaClient, Error> {
         let mut client = KafkaClient::new(self.brokers.iter().cloned().collect());
         client.set_compression(self.compression);
+        debug!("Set client compression: {:?}", self.compression);
         try!(client.load_metadata_all());
 
         if !self.topics.is_empty() {
