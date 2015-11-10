@@ -286,32 +286,18 @@ fn test_produce_consume_integration(cfg: &Config) -> Result<(), Error> {
 
         // ~ remeber the current offsets
         let init_offsets = try!(client.fetch_offsets(topics.iter().cloned().collect(), -1));
-        debug!("init_offsets: {:#?}", init_offsets);
+        trace!("init_offsets: {:#?}", init_offsets);
 
         // ~ send the messages
         let n_msgs = msgs.len();
         try!(client.send_messages(1, 1000, msgs));
         debug!("Sent {} messages", n_msgs);
 
-        // ~ now fetch the messages and verify we could read them back
-        let mut reqs = vec![];
-        for topic in topics {
-            let init_offsets = init_offsets.get(topic).unwrap();
-            let partitions = client.topic_partitions.get(topic).unwrap();
-            for partition in partitions {
-                reqs.push(kafka::utils::TopicPartitionOffset {
-                    topic: topic.clone(),
-                    partition: *partition,
-                    offset: find_offset(init_offsets, *partition).unwrap(),
-                });
-            }
-        }
-
-        debug!("Fetching messages for: {:#?}", reqs);
-        let fetched_msgs = try!(client.fetch_messages_multi(reqs));
+        let fetched_msgs = try!(fetch_all_messages(client, init_offsets));
         debug!("Fetched {} messages", fetched_msgs.len());
         let mut msgs_per_topic = HashMap::with_capacity(topics.len());
         for msg in fetched_msgs {
+            assert!(msg.error.is_none());
             assert_eq!(msg.message, sent_msg);
             if let Some(v) = msgs_per_topic.get_mut(&msg.topic) {
                 *v = *v + 1;
@@ -322,15 +308,52 @@ fn test_produce_consume_integration(cfg: &Config) -> Result<(), Error> {
         for (_, v) in msgs_per_topic {
             assert_eq!(v, msg_per_topic);
         }
+
         debug!("Verified all fetched messages");
         Ok(())
     }
 
-    fn find_offset(offsets: &[kafka::utils::PartitionOffset], partition: i32) -> Option<i64> {
-        offsets.into_iter()
-            .filter(|off| off.partition == partition)
-            .next()
-            .and_then(|off| Some(off.offset))
+    // just a hacky way to consume all available message for the topic
+    // given partitions as of the specified offsets
+    fn fetch_all_messages(client: &mut KafkaClient,
+                          start_offsets: HashMap<String, Vec<kafka::utils::PartitionOffset>>)
+                          -> kafka::error::Result<Vec<kafka::utils::TopicMessage>> {
+        let mut offs = HashMap::new();
+        for (topic, pos) in start_offsets {
+            for po in pos {
+                offs.insert(format!("{}-{}", topic, po.partition),
+                            kafka::utils::TopicPartitionOffset {
+                                topic: topic.clone(),
+                                partition: po.partition,
+                                offset: po.offset,
+                            });
+            }
+        }
+
+        let mut resp = Vec::new();
+        loop {
+            // ~ now fetch the messages and verify we could read them back
+            let mut reqs = vec![];
+            for (_, off) in &offs {
+                reqs.push(kafka::utils::TopicPartitionOffset {
+                    topic: off.topic.clone(),
+                    partition: off.partition,
+                    offset: off.offset,
+                });
+            }
+
+            trace!("Fetching messages for: {:#?}", reqs);
+            match client.fetch_messages_multi(reqs) {
+                Err(e) => return Err(e),
+                Ok(ref msgs) if msgs.is_empty() => return Ok(resp),
+                Ok(msgs) => {
+                    for msg in msgs {
+                        offs.get_mut(&format!("{}-{}", msg.topic, msg.partition)).unwrap().offset += 1;
+                        resp.push(msg);
+                    }
+                }
+            }
+        }
     }
 
     // ~ --------------------------------------------------------------
