@@ -11,8 +11,9 @@ byteorder = "*"
 stopwatch = "*"
 
 [dependencies.kafka]
-version = "*"
-#path = "../rust/kafka-rust"
+#path = "../kafka-rust"
+git = "https://github.com/spicavigo/kafka-rust.git"
+branch = "master"
 
 [profile.release]
 opt-level = 3
