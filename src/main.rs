@@ -241,7 +241,7 @@ fn produce_data(cfg: &Config) -> Result<(), Error> {
         for topic in topics.iter() {
             data.push(kafka::utils::ProduceMessage {
                 topic: topic,
-                message: msg.clone(),
+                message: &msg,
             });
         }
     }
@@ -361,7 +361,7 @@ fn test_produce_consume_integration(cfg: &Config) -> Result<(), Error> {
             let mut msgs = Vec::with_capacity(topics.len() * msg_per_topic as usize);
             for topic in topics {
                 for _ in 0..msg_per_topic {
-                    msgs.push(kafka::utils::ProduceMessage { topic: topic, message: sent_msg.to_owned() });
+                    msgs.push(kafka::utils::ProduceMessage { topic: topic, message: sent_msg });
                 }
             }
             msgs
