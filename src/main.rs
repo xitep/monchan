@@ -10,6 +10,7 @@ use std::cmp;
 use std::collections::HashMap;
 use std::env;
 use std::iter::repeat;
+use std::str;
 
 use kafka::client::{KafkaClient, Compression};
 use stopwatch::Stopwatch;
@@ -49,6 +50,8 @@ struct Config {
     produce_bytes_per_msg: u32,
 
     compression: Compression,
+
+    dump_consumed: bool,
 }
 
 impl Config {
@@ -62,6 +65,7 @@ impl Config {
         opts.optopt("", "produce-msgs-per-topic", "Produce N messages per topic", "N");
         opts.optopt("", "produce-bytes-per-msg", "Produce N bytes per message", "N");
         opts.optopt("", "compression", "Set compression type [NONE, GZIP, SNAPPY]", "TYPE");
+        opts.optflag("", "dump-consumed", "Print consumed message as utf8 strings");
         let matches = match opts.parse(&args[1..]) {
             Ok(m) => m,
             Err(e) => return Err(e.to_string()),
@@ -98,6 +102,7 @@ impl Config {
                     _ => return Err(format!("Unknown compression type: {}", s)),
                 }
             },
+            dump_consumed: matches.opt_present("dump-consumed"),
         };
         let cmds = if matches.free.is_empty() {
             vec!["offsets".to_owned()]
@@ -236,13 +241,21 @@ fn consume_data(cfg: &Config) -> Result<(), Error> {
             }
 
             for msg in msgs {
-                trace!("msg.topic: {}, msg.partition: {}, msg.offset: {}",
-                       msg.topic, msg.partition, msg.offset);
+                trace!("msg.topic: {}, msg.partition: {}, msg.offset: {}, msg.error: {:?}",
+                       msg.topic, msg.partition, msg.offset, msg.error);
+
                 match msg.error {
                     Some(_) => {
                         n_errors += 1;
                     }
                     None => {
+                        if cfg.dump_consumed {
+                            match str::from_utf8(&msg.message) {
+                                Ok(s) => println!("{}", s),
+                                Err(e) => warn!("Failed decoding message as utf8 string: {}", e),
+                            }
+                        }
+
                         n_msgs += 1;
                         n_bytes += msg.message.len() as u64;
                         offsets[msg.partition as usize] += 1;
