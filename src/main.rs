@@ -154,7 +154,7 @@ impl Config {
 
         if !self.topics.is_empty() {
             for topic in &self.topics {
-                if !client.topic_partitions.contains_key(topic) {
+                if !client.contains_topic(topic) {
                     return Err(Error::Other(format!("No such topic: {}", topic)));
                 }
             }
@@ -227,7 +227,7 @@ fn dump_offsets(cfg: &Config) -> Result<(), Error> {
 
     let mut client = try!(cfg.new_client());
     let topics: Vec<String> = if cfg.topics.is_empty() {
-        client.topic_partitions.keys().cloned().collect()
+        client.iter_topics().names().map(ToOwned::to_owned).collect()
     } else {
         cfg.topics.clone()
     };
@@ -262,7 +262,7 @@ fn produce_data(cfg: &Config) -> Result<(), Error> {
 
     let mut client = try!(cfg.new_client());
     let topics: Vec<String> = if cfg.topics.is_empty() {
-        client.topic_partitions.keys().cloned().collect()
+        client.iter_topics().names().map(ToOwned::to_owned).collect()
     } else {
         cfg.topics.clone()
     };
@@ -290,15 +290,19 @@ fn produce_data(cfg: &Config) -> Result<(), Error> {
 fn consume_data(cfg: &Config) -> Result<(), Error> {
     let mut client = try!(cfg.new_client());
 
-    let topic_partitions = if cfg.topics.is_empty() {
-        client.topic_partitions.clone()
-    } else {
-        let mut m = HashMap::new();
-        for topic in &cfg.topics {
-            if let Some(partitions) = client.topic_partitions.get(&topic[..]) {
-                m.insert(topic.clone(), partitions.clone());
-            };
-        }
+    let topic_partitions = {
+        let mut m = HashMap::<String, Vec<i32>>::new();
+        if cfg.topics.is_empty() {
+            for topic in client.iter_topics() {
+                m.insert(topic.name().to_owned(), topic.partitions().map(|p| p.id()).collect());
+            }
+        } else {
+            for topic in &cfg.topics {
+                if let Ok(partitions) = client.iter_topic_partitions(&topic[..]) {
+                    m.insert(topic.clone(), partitions.map(|p| p.id()).collect());
+                }
+            }
+        };
         m
     };
 
@@ -473,7 +477,7 @@ fn test_produce_consume_integration(cfg: &Config) -> Result<(), Error> {
     let mut client = try!(cfg.new_client());
     try!(client.load_metadata_all());
     for topic in &cfg.topics {
-        if !client.topic_partitions.contains_key(topic) {
+        if !client.contains_topic(topic) {
             return Err(Error::Other(format!("Non existent topic: {}", topic)));
         }
     }
