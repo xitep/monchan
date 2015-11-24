@@ -227,7 +227,7 @@ fn dump_offsets(cfg: &Config) -> Result<(), Error> {
 
     let mut client = try!(cfg.new_client());
     let topics: Vec<String> = if cfg.topics.is_empty() {
-        client.iter_topics().names().map(ToOwned::to_owned).collect()
+        client.topics().names().map(ToOwned::to_owned).collect()
     } else {
         cfg.topics.clone()
     };
@@ -262,7 +262,7 @@ fn produce_data(cfg: &Config) -> Result<(), Error> {
 
     let mut client = try!(cfg.new_client());
     let topics: Vec<String> = if cfg.topics.is_empty() {
-        client.iter_topics().names().map(ToOwned::to_owned).collect()
+        client.topics().names().map(ToOwned::to_owned).collect()
     } else {
         cfg.topics.clone()
     };
@@ -293,12 +293,12 @@ fn consume_data(cfg: &Config) -> Result<(), Error> {
     let topic_partitions = {
         let mut m = HashMap::<String, Vec<i32>>::new();
         if cfg.topics.is_empty() {
-            for topic in client.iter_topics() {
+            for topic in client.topics() {
                 m.insert(topic.name().to_owned(), topic.partitions().map(|p| p.id()).collect());
             }
         } else {
             for topic in &cfg.topics {
-                if let Ok(partitions) = client.iter_topic_partitions(&topic[..]) {
+                if let Ok(partitions) = client.topic_partitions(&topic[..]) {
                     m.insert(topic.clone(), partitions.map(|p| p.id()).collect());
                 }
             }
@@ -346,23 +346,21 @@ fn consume_data(cfg: &Config) -> Result<(), Error> {
             }
 
             for msg in msgs {
-                trace!("msg.topic: {}, msg.partition: {}, msg.offset: {}, msg.error: {:?}",
-                       msg.topic, msg.partition, msg.offset, msg.error);
-
-                match msg.error {
-                    Some(_) => {
+                match msg.message {
+                    Err(e) => {
                         n_errors += 1;
+                        trace!("msg.topic: {}, msg.partition: {}, error: {}", msg.topic, msg.partition, e);
                     }
-                    None => {
+                    Ok(message) => {
                         if cfg.dump_consumed {
-                            match str::from_utf8(&msg.message) {
+                            match str::from_utf8(&message.value) {
                                 Ok(s) => println!("{}", s),
                                 Err(e) => warn!("Failed decoding message as utf8 string: {}", e),
                             }
                         }
 
                         n_msgs += 1;
-                        n_bytes += msg.message.len() as u64;
+                        n_bytes += message.value.len() as u64;
                         reqs[msg.partition as usize].offset += 1;
 
                         if n_msgs % 100000 == 0 {
@@ -416,8 +414,8 @@ fn test_produce_consume_integration(cfg: &Config) -> Result<(), Error> {
         debug!("Fetched {} messages", fetched_msgs.len());
         let mut msgs_per_topic = HashMap::with_capacity(topics.len());
         for msg in fetched_msgs {
-            assert!(msg.error.is_none());
-            assert_eq!(msg.message, sent_msg);
+            assert!(msg.message.is_ok());
+            assert_eq!(msg.message.unwrap().value, sent_msg);
             if let Some(v) = msgs_per_topic.get_mut(&msg.topic) {
                 *v = *v + 1;
                 continue;
