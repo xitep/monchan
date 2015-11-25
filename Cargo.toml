@@ -13,8 +13,8 @@ time = "*"
 
 [dependencies.kafka]
 #path = "../kafka-rust"
-git = "https://github.com/xitep/kafka-rust.git"
-branch = "experimental-changes"
+git = "https://github.com/spicavigo/kafka-rust.git"
+branch = "branch-0.2.x"
 
 [profile.release]
 opt-level = 3

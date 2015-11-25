@@ -5,7 +5,7 @@ dependencies = [
  "byteorder 0.4.2 (registry+https://github.com/rust-lang/crates.io-index)",
  "env_logger 0.3.2 (registry+https://github.com/rust-lang/crates.io-index)",
  "getopts 0.2.14 (registry+https://github.com/rust-lang/crates.io-index)",
- "kafka 0.2.0 (git+https://github.com/xitep/kafka-rust.git?branch=experimental-changes)",
+ "kafka 0.2.0 (git+https://github.com/spicavigo/kafka-rust.git?branch=branch-0.2.x)",
  "log 0.3.3 (registry+https://github.com/rust-lang/crates.io-index)",
  "stopwatch 0.0.6 (registry+https://github.com/rust-lang/crates.io-index)",
  "time 0.1.34 (registry+https://github.com/rust-lang/crates.io-index)",
@@ -76,7 +76,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 [[package]]
 name = "kafka"
 version = "0.2.0"
-source = "git+https://github.com/xitep/kafka-rust.git?branch=experimental-changes#b3fa2be1d10e03ab03323edf22de4d10a697d330"
+source = "git+https://github.com/spicavigo/kafka-rust.git?branch=branch-0.2.x#ca4b38096fe058c2b0c3dff3a8698eeeecb346f4"
 dependencies = [
  "byteorder 0.4.2 (registry+https://github.com/rust-lang/crates.io-index)",
  "crc 1.2.0 (registry+https://github.com/rust-lang/crates.io-index)",
