@@ -340,38 +340,47 @@ fn consume_data(cfg: &Config) -> Result<(), Error> {
         let sw = Stopwatch::start_new();
         let (mut n_bytes, mut n_msgs, mut n_errors) = (0u64, 0u64, 0u64);
         loop {
-            let msgs = try!(client.fetch_messages_multi(reqs.iter().filter(|req| req.offset != -1)));
-            if msgs.is_empty() {
-                break;
-            }
-
-            for msg in msgs {
-                match msg.message {
-                    Err(e) => {
-                        n_errors += 1;
-                        trace!("msg.topic: {}, msg.partition: {}, error: {}", msg.topic, msg.partition, e);
-                    }
-                    Ok(message) => {
-                        if cfg.dump_consumed {
-                            match str::from_utf8(&message.value) {
-                                Ok(s) => println!("{}", s),
-                                Err(e) => warn!("Failed decoding message as utf8 string: {}", e),
+            trace!("Issueing zfetch_messages_multi request");
+            let resps = try!(client.zfetch_messages_multi(reqs.iter().filter(|req| req.offset != -1)));
+            let mut had_messages = false;
+            for resp in resps {
+                for t in resp.topics() {
+                    for p in t.partitions() {
+                        match p.messages() {
+                            Err(e) => {
+                                reqs[p.partition as usize].offset = -1;
+                                n_errors += 1;
+                                warn!("msg.topic: {}, msg.partition: {}, error: {}", t.topic, p.partition, e);
                             }
-                        }
+                            Ok(messages) => {
+                                for msg in messages {
+                                    had_messages = true;
+                                    if cfg.dump_consumed {
+                                        match str::from_utf8(&msg.value) {
+                                            Ok(s) => println!("{}", s),
+                                            Err(e) => warn!("Failed decoding message as utf8 string: {}", e),
+                                        }
+                                    }
 
-                        n_msgs += 1;
-                        n_bytes += message.value.len() as u64;
-                        reqs[msg.partition as usize].offset += 1;
+                                    n_msgs += 1;
+                                    n_bytes += msg.value.len() as u64;
+                                    reqs[p.partition as usize].offset += 1;
 
-                        if n_msgs % 100000 == 0 {
-                            let elapsed_ms = sw.elapsed_ms();
-                            let total = n_msgs + n_errors;
-                            debug!("topic: {}, total msgs: {} (errors: {}), bytes: {}, elapsed: {}ms ==> msg/s: {:.2}",
-                                   topic, total, n_errors, n_bytes, elapsed_ms,
-                                   (1000 * total) as f64 / elapsed_ms as f64);
+                                    if n_msgs % 100000 == 0 {
+                                        let elapsed_ms = sw.elapsed_ms();
+                                        let total = n_msgs + n_errors;
+                                        debug!("topic: {}, total msgs: {} (errors: {}), bytes: {}, elapsed: {}ms ==> msg/s: {:.2}",
+                                               topic, total, n_errors, n_bytes, elapsed_ms,
+                                               (1000 * total) as f64 / elapsed_ms as f64);
+                                    }
+                                }
+                            }
                         }
                     }
                 }
+            }
+            if !had_messages {
+                break;
             }
         }
         let elapsed_ms = sw.elapsed_ms();
