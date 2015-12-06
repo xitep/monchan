@@ -14,6 +14,7 @@ use std::str;
 use std::thread;
 
 use kafka::client::{KafkaClient, Compression, FetchOffset};
+use kafka::client::zfetch::iter_responses;
 use stopwatch::Stopwatch;
 
 fn main() {
@@ -343,37 +344,35 @@ fn consume_data(cfg: &Config) -> Result<(), Error> {
             trace!("Issueing zfetch_messages_multi request");
             let resps = try!(client.zfetch_messages_multi(reqs.iter().filter(|req| req.offset != -1)));
             let mut had_messages = false;
-            for resp in resps {
-                for t in resp.topics() {
-                    for p in t.partitions() {
-                        match p.messages() {
-                            Err(e) => {
-                                reqs[p.partition as usize].offset = -1;
-                                n_errors += 1;
-                                warn!("msg.topic: {}, msg.partition: {}, error: {}", t.topic, p.partition, e);
-                            }
-                            Ok(messages) => {
-                                for msg in messages {
-                                    had_messages = true;
-                                    if cfg.dump_consumed {
-                                        match str::from_utf8(&msg.value) {
-                                            Ok(s) => println!("{}", s),
-                                            Err(e) => warn!("Failed decoding message as utf8 string: {}", e),
-                                        }
-                                    }
+            for r in iter_responses(&resps) {
+                match r.messages {
+                    Err(e) => {
+                        reqs[r.partition as usize].offset = -1;
+                        n_errors += 1;
+                        warn!("msg.topic: {}, msg.partition: {}, error: {}", r.topic, r.partition, e);
+                    }
+                    Ok(messages) => {
+                        for msg in messages {
+                            let msg_val = msg.value();
 
-                                    n_msgs += 1;
-                                    n_bytes += msg.value.len() as u64;
-                                    reqs[p.partition as usize].offset += 1;
-
-                                    if n_msgs % 100000 == 0 {
-                                        let elapsed_ms = sw.elapsed_ms();
-                                        let total = n_msgs + n_errors;
-                                        debug!("topic: {}, total msgs: {} (errors: {}), bytes: {}, elapsed: {}ms ==> msg/s: {:.2}",
-                                               topic, total, n_errors, n_bytes, elapsed_ms,
-                                               (1000 * total) as f64 / elapsed_ms as f64);
-                                    }
+                            had_messages = true;
+                            if cfg.dump_consumed {
+                                match str::from_utf8(msg_val) {
+                                    Ok(s) => println!("{}", s),
+                                    Err(e) => warn!("Failed decoding message as utf8 string: {}", e),
                                 }
+                            }
+
+                            n_msgs += 1;
+                            n_bytes += msg_val.len() as u64;
+                            reqs[r.partition as usize].offset += 1;
+
+                            if n_msgs % 100000 == 0 {
+                                let elapsed_ms = sw.elapsed_ms();
+                                let total = n_msgs + n_errors;
+                                debug!("topic: {}, total msgs: {} (errors: {}), bytes: {}, elapsed: {}ms ==> msg/s: {:.2}",
+                                       topic, total, n_errors, n_bytes, elapsed_ms,
+                                       (1000 * total) as f64 / elapsed_ms as f64);
                             }
                         }
                     }
