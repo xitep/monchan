@@ -59,6 +59,7 @@ struct Config {
     fetch_max_bytes: i32,
 
     dump_consumed: bool,
+    dump_offset: FetchOffset,
 }
 
 impl Config {
@@ -72,6 +73,7 @@ impl Config {
         opts.optopt("", "produce-msgs-per-topic", "Produce N messages per topic", "N");
         opts.optopt("", "produce-bytes-per-msg", "Produce N bytes per message", "N");
         opts.optopt("", "compression", "Set compression type [NONE, GZIP, SNAPPY]", "TYPE");
+        opts.optflag("", "earliest-offset", "When dumping offsets use the earliest");
         opts.optflag("", "dump-consumed", "Print consumed message as utf8 strings");
         opts.optopt("", "fetch-max-wait-time", "Set the fetch-max-wait-time", "MILLIS");
         opts.optopt("", "fetch-min-bytes", "Set the fetch-min-bytes", "N");
@@ -128,6 +130,11 @@ impl Config {
                  .unwrap_or_else(|| format!("{}", kafka::client::DEFAULT_FETCH_MAX_BYTES_PER_PARTITION))
                  .parse::<i32>()
                  .map_err(|e| format!("not a number: {}", e))),
+            dump_offset: if matches.opt_present("earliest-offset") {
+                FetchOffset::Earliest
+            } else {
+                FetchOffset::Latest
+            },
         };
         let cmds = if matches.free.is_empty() {
             vec!["dump-offsets".to_owned()]
@@ -197,7 +204,7 @@ fn follow_offsets(cfg: &Config)-> Result<(), Error> {
 
     loop {
         let now = time::now();
-        let mut offs = try!(client.fetch_topic_offset(topic, FetchOffset::Latest));
+        let mut offs = try!(client.fetch_topic_offset(topic, cfg.dump_offset));
         offs.sort_by(|a, b| a.partition.cmp(&b.partition));
         debug!("fetched offsets: {:?}", offs);
 
@@ -232,7 +239,7 @@ fn dump_offsets(cfg: &Config) -> Result<(), Error> {
     } else {
         cfg.topics.clone()
     };
-    let offs = try!(client.fetch_offsets(&topics, FetchOffset::Latest));
+    let offs = try!(client.fetch_offsets(&topics, cfg.dump_offset));
     if offs.is_empty() {
         return Ok(());
     }
