@@ -161,8 +161,9 @@ impl Config {
         try!(client.load_metadata_all());
 
         if !self.topics.is_empty() {
+            let client_topics = client.topics();
             for topic in &self.topics {
-                if !client.contains_topic(topic) {
+                if !client_topics.contains(topic) {
                     return Err(Error::Other(format!("No such topic: {}", topic)));
                 }
             }
@@ -301,13 +302,14 @@ fn consume_data(cfg: &Config) -> Result<(), Error> {
     let topic_partitions = {
         let mut m = HashMap::<String, Vec<i32>>::new();
         if cfg.topics.is_empty() {
-            for topic in client.topics() {
-                m.insert(topic.name().to_owned(), topic.partitions().map(|p| p.id()).collect());
+            for topic in client.topics().iter() {
+                m.insert(topic.name().to_owned(), topic.partitions().iter().map(|p| p.id()).collect());
             }
         } else {
+            let client_topics = client.topics();
             for topic in &cfg.topics {
-                if let Ok(partitions) = client.topic_partitions(&topic[..]) {
-                    m.insert(topic.clone(), partitions.map(|p| p.id()).collect());
+                if let Some(partitions) = client_topics.partitions(&topic[..]) {
+                    m.insert(topic.clone(), partitions.iter().map(|p| p.id()).collect());
                 }
             }
         };
@@ -489,9 +491,12 @@ fn test_produce_consume_integration(cfg: &Config) -> Result<(), Error> {
     // ~ make sure all of the topics we will be sending messages to do exist
     let mut client = try!(cfg.new_client());
     try!(client.load_metadata_all());
-    for topic in &cfg.topics {
-        if !client.contains_topic(topic) {
-            return Err(Error::Other(format!("Non existent topic: {}", topic)));
+    {
+        let client_topics = client.topics();
+        for topic in &cfg.topics {
+            if !client_topics.contains(topic) {
+                return Err(Error::Other(format!("Non existent topic: {}", topic)));
+            }
         }
     }
 
