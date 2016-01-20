@@ -326,7 +326,7 @@ fn consume_data(cfg: &Config) -> Result<(), Error> {
                 n_msgs += 1;
                 n_bytes += msg_val.len() as u64;
 
-                if n_msgs % 100000 == 0 {
+                if n_msgs % 500_000 == 0 {
                     let elapsed_ms = sw.elapsed_ms();
                     let total = n_msgs + n_errors;
                     debug!("topic: {}, total msgs: {} (errors: {}), bytes: {}, elapsed: {}ms ==> msg/s: {:.2} (bytes/s: {:.2})",
