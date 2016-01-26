@@ -398,11 +398,8 @@ fn test_produce_consume_integration(cfg: &Config) -> Result<(), Error> {
         for (topic, pos) in &start_offsets {
             for po in pos {
                 offs.insert(format!("{}-{}", topic, po.partition),
-                            kafka::utils::TopicPartitionOffset {
-                                topic: &topic,
-                                partition: po.partition,
-                                offset: po.offset.clone().unwrap(),
-                            });
+                            kafka::utils::FetchPartition::new(
+                                &topic, po.partition, po.offset.clone().unwrap()));
             }
         }
 
