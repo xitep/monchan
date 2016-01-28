@@ -300,8 +300,11 @@ fn consume_data(cfg: &Config) -> Result<(), Error> {
     let mut client = try!(cfg.new_client());
 
     for topic in &cfg.topics {
-        let mut consumer = Consumer::new(client, "monchan".to_owned(), topic.to_owned())
-            .with_fallback_offset(FetchOffset::Earliest);
+        let mut consumer = try!(Consumer::from_client(client,
+                                                      "monchan".to_owned(),
+                                                      topic.to_owned())
+                                .with_fallback_offset(FetchOffset::Earliest)
+                                .create());
 
         // ~ now request all the data from the topic
         let sw = Stopwatch::start_new();
@@ -339,7 +342,7 @@ fn consume_data(cfg: &Config) -> Result<(), Error> {
         let elapsed_ms = sw.elapsed_ms();
 
         let total = n_msgs + n_errors;
-        debug!("topic: {}, total msgs: {} (errors: {}), bytes: {}, elapsed: {}ms ==> msg/s: {:.2} (bytes/s: {:.2}",
+        debug!("topic: {}, total msgs: {} (errors: {}), bytes: {}, elapsed: {}ms ==> msg/s: {:.2} (bytes/s: {:.2})",
                topic, total, n_errors, n_bytes, elapsed_ms,
                (1000 * total) as f64 / elapsed_ms as f64,
                (1000 * n_bytes) as f64 / elapsed_ms as f64);
