@@ -76,7 +76,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 [[package]]
 name = "kafka"
 version = "0.2.0"
-source = "git+https://github.com/spicavigo/kafka-rust.git?branch=branch-0.2.x#e4b32b0d021f25a510f0c33910cfe62122791f03"
+source = "git+https://github.com/spicavigo/kafka-rust.git?branch=branch-0.2.x#be201a648a9b40b57d1b170f782893fc8ae80d78"
 dependencies = [
  "byteorder 0.4.2 (registry+https://github.com/rust-lang/crates.io-index)",
  "crc 1.2.0 (registry+https://github.com/rust-lang/crates.io-index)",

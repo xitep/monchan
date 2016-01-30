@@ -13,7 +13,7 @@ use std::env;
 use std::str;
 use std::thread;
 
-use kafka::client::{KafkaClient, Compression, FetchOffset};
+use kafka::client::{KafkaClient, Compression, FetchOffset, FetchPartition};
 use kafka::consumer::Consumer;
 use stopwatch::Stopwatch;
 
@@ -401,8 +401,7 @@ fn test_produce_consume_integration(cfg: &Config) -> Result<(), Error> {
         for (topic, pos) in &start_offsets {
             for po in pos {
                 offs.insert(format!("{}-{}", topic, po.partition),
-                            kafka::utils::FetchPartition::new(
-                                &topic, po.partition, po.offset.clone().unwrap()));
+                            FetchPartition::new(&topic, po.partition, po.offset.clone().unwrap()));
             }
         }
 
