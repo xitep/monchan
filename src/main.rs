@@ -35,7 +35,7 @@ fn main() {
             "dump-offsets" => dump_offsets(&cfg),
             "produce" => produce_data(&cfg),
             "consume" => consume_data(&cfg),
-            "test-produce-consume-integration" => test_produce_consume_integration(&cfg),
+            "produce-consume-integration" => produce_consume_integration(&cfg),
             _ => Err(Error::Other(format!("unknown command: {}", cmd))),
         };
         if let Err(e) = res {
@@ -355,7 +355,7 @@ fn consume_data(cfg: &Config) -> Result<(), Error> {
 /// Produces messages to a topic and reads them back. Verifying none
 /// has been lost. Assumes no concurrent producers to the target
 /// topic.
-fn test_produce_consume_integration(cfg: &Config) -> Result<(), Error> {
+fn produce_consume_integration(cfg: &Config) -> Result<(), Error> {
 
     fn do_test(client: &mut KafkaClient, topics: &[String], msg_per_topic: usize, sent_msg: &[u8]) -> Result<(), Error> {
         // ~ the data set will be sending

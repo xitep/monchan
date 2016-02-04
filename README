@@ -4,7 +4,7 @@ An example program to play around with kafka-rust:
 
 Usage:
 
-    # Requires rust-nightly (1.5.0)
+    # Requires rust-nightly
     $ cargo build --release
 
     # monchan will print some timing information on debug level
@@ -26,4 +26,4 @@ Usage:
     $ ./target/releease/monchan --brokers 'localhost:9092' --topics 'my-topic-1' consume
 
     # run a produce/consume test against a given topic
-    ./target/release/monchan --compression=snappy --produce-msgs-per-topic 100 --produce-bytes-per-msg 10 --topics my-test-topic test-produce-consume-integration
+    ./target/release/monchan --compression=snappy --produce-msgs-per-topic 100 --produce-bytes-per-msg 10 --topics my-test-topic produce-consume-integration

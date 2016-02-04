@@ -22,7 +22,7 @@ dependencies = [
 
 [[package]]
 name = "aho-corasick"
-version = "0.4.0"
+version = "0.4.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 dependencies = [
  "memchr 0.1.7 (registry+https://github.com/rust-lang/crates.io-index)",
@@ -76,7 +76,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 [[package]]
 name = "kafka"
 version = "0.2.0"
-source = "git+https://github.com/spicavigo/kafka-rust.git?branch=branch-0.2.x#be201a648a9b40b57d1b170f782893fc8ae80d78"
+source = "git+https://github.com/spicavigo/kafka-rust.git?branch=branch-0.2.x#5b672d0b1b4379a97dc6971f0859edbc4700ce5b"
 dependencies = [
  "byteorder 0.4.2 (registry+https://github.com/rust-lang/crates.io-index)",
  "crc 1.2.0 (registry+https://github.com/rust-lang/crates.io-index)",
@@ -159,7 +159,7 @@ name = "regex"
 version = "0.1.48"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 dependencies = [
- "aho-corasick 0.4.0 (registry+https://github.com/rust-lang/crates.io-index)",
+ "aho-corasick 0.4.1 (registry+https://github.com/rust-lang/crates.io-index)",
  "memchr 0.1.7 (registry+https://github.com/rust-lang/crates.io-index)",
  "regex-syntax 0.2.2 (registry+https://github.com/rust-lang/crates.io-index)",
 ]
