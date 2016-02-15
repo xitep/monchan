@@ -265,34 +265,52 @@ fn dump_offsets(cfg: &Config) -> Result<(), Error> {
 }
 
 fn produce_data(cfg: &Config) -> Result<(), Error> {
+    use std::borrow::ToOwned;
+    use kafka::producer::{Producer, Record};
+
     debug!("producing data to: {:?}", cfg);
 
-    let msg: Vec<u8> = (0..cfg.produce_bytes_per_msg).map(|v| (v % 256) as u8).collect();
+    let msg: Vec<u8> = (0..cfg.produce_bytes_per_msg)
+        .map(|v| (v % 256) as u8)
+        .collect();
 
-    let mut client = try!(cfg.new_client());
-    let topics: Vec<String> = if cfg.topics.is_empty() {
-        client.topics().names().map(ToOwned::to_owned).collect()
-    } else {
-        cfg.topics.clone()
-    };
+    let client = try!(cfg.new_client());
+    let topics: Vec<String> =
+        if cfg.topics.is_empty() {
+            client.topics().names().map(ToOwned::to_owned).collect()
+        } else {
+            cfg.topics.clone()
+        };
 
     let msg_total = cfg.produce_msg_per_topic as usize * topics.len();
     let mut data = Vec::with_capacity(msg_total);
-    for _ in 0..cfg.produce_msg_per_topic {
-        for topic in topics.iter() {
-            data.push(kafka::utils::ProduceMessage {
-                topic: topic,
-                message: &msg,
-            });
+    for topic in &topics {
+        for _ in 0 .. cfg.produce_msg_per_topic {
+            data.push(Record::from_value(&topic, &*msg));
         }
     }
-    let sw = Stopwatch::start_new();
-    //try!(client.send_messages(-1, 1000, data));
-    try!(client.send_messages(0, 0, data));
-    let elapsed_ms = sw.elapsed_ms();
-    debug!("Sent {} messages in {}ms ==> {:.2} msg/s",
-           msg_total, elapsed_ms, (1000 * msg_total) as f64 / elapsed_ms as f64);
+    debug!("data.len() = {}", data.len());
 
+    let mut producer = try!(Producer::from_client(client)
+                            .with_ack_timeout(1000)
+                            .with_required_acks(-1)
+                            .create());
+    let sw = Stopwatch::start_new();
+    let rs = try!(producer.send_all(&data));
+    let elapsed_ms = sw.elapsed_ms();
+    debug!("Sent {} messages in {}ms ==> {:.2} msg/s ==> {:.2} bytes/s",
+           msg_total, elapsed_ms,
+           (1000 * msg_total) as f64 / elapsed_ms as f64,
+           (1000 * msg_total * msg.len()) as f64 / elapsed_ms as f64);
+
+    // ~ validate whether we successfully sent the messages to all the target partitions
+    for r in rs {
+        if let Some(e) = r.error {
+            return Err(From::from(e));
+        }
+    }
+
+    // ~ everything fine :)
     Ok(())
 }
 
@@ -356,30 +374,42 @@ fn consume_data(cfg: &Config) -> Result<(), Error> {
 /// has been lost. Assumes no concurrent producers to the target
 /// topic.
 fn produce_consume_integration(cfg: &Config) -> Result<(), Error> {
-
-    fn do_test(client: &mut KafkaClient, topics: &[String], msg_per_topic: usize, sent_msg: &[u8]) -> Result<(), Error> {
-        // ~ the data set will be sending
-        let msgs = {
-            let mut msgs = Vec::with_capacity(topics.len() * msg_per_topic as usize);
-            for topic in topics {
-                for _ in 0..msg_per_topic {
-                    msgs.push(kafka::utils::ProduceMessage { topic: topic, message: sent_msg });
-                }
-            }
-            msgs
-        };
+    fn do_test(mut client: KafkaClient, topics: &[String], msg_per_topic: usize, sent_msg: &[u8])
+               -> Result<(), Error>
+    {
+        use kafka::producer::{Producer, Record};
 
         // ~ remeber the current offsets
         let init_offsets = try!(client.fetch_offsets(topics, FetchOffset::Latest));
         trace!("init_offsets: {:#?}", init_offsets);
 
-        // ~ send the messages
-        let n_msgs = msgs.len();
-        try!(client.send_messages(1, 1000, msgs));
-        debug!("Sent {} messages", n_msgs);
+        // ~ produce data to the target topics
+        {
+            // ~ the data set will be sending
+            let msgs = {
+                let mut msgs = Vec::with_capacity(topics.len() * msg_per_topic as usize);
+                for topic in topics {
+                    for _ in 0..msg_per_topic {
+                        msgs.push(Record::from_value(topic, sent_msg));
+                    }
+                }
+                msgs
+            };
+
+            // ~ send the messages
+            let mut producer = try!(Producer::from_client(client)
+                                    .with_required_acks(1)
+                                    .with_ack_timeout(1000)
+                                    .create());
+            try!(producer.send_all(&msgs));
+            debug!("Sent {} messages", msgs.len());
+
+            // ~ get back the client
+            client = producer.client();
+        }
 
         // ~ verify the messages
-        let msgs_per_topic = try!(verify_messages(client, init_offsets, sent_msg));
+        let msgs_per_topic = try!(verify_messages(&mut client, init_offsets, sent_msg));
         for (_, v) in msgs_per_topic {
             assert_eq!(v, msg_per_topic);
         }
@@ -458,7 +488,7 @@ fn produce_consume_integration(cfg: &Config) -> Result<(), Error> {
     let s = b"hello, world";
     let sent_msg: Vec<u8> = s.into_iter().cycle().take(cfg.produce_bytes_per_msg as usize).cloned().collect();
     // ~ run the test
-    try!(do_test(&mut client, &cfg.topics, cfg.produce_msg_per_topic as usize, &sent_msg));
+    try!(do_test(client, &cfg.topics, cfg.produce_msg_per_topic as usize, &sent_msg));
 
     Ok(())
 }

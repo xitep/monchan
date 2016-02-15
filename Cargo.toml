@@ -12,7 +12,7 @@ stopwatch = "*"
 time = "*"
 
 [dependencies.kafka]
-#path = "../kafka-rust"
+# path = "../kafka-rust"
 git = "https://github.com/spicavigo/kafka-rust.git"
 branch = "branch-0.2.x"
 
