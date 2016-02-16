@@ -13,7 +13,7 @@ use std::env;
 use std::str;
 use std::thread;
 
-use kafka::client::{KafkaClient, Compression, FetchOffset, FetchPartition};
+use kafka::client::{KafkaClient, Compression, FetchOffset, FetchPartition, PartitionOffset};
 use kafka::consumer::Consumer;
 use stopwatch::Stopwatch;
 
@@ -205,7 +205,7 @@ fn follow_offsets(cfg: &Config)-> Result<(), Error> {
 
     loop {
         let now = time::now();
-        let mut offs = try!(client.fetch_topic_offset(topic, cfg.dump_offset));
+        let mut offs = try!(client.fetch_topic_offsets(topic, cfg.dump_offset));
         offs.sort_by(|a, b| a.partition.cmp(&b.partition));
         debug!("fetched offsets: {:?}", offs);
 
@@ -305,7 +305,7 @@ fn produce_data(cfg: &Config) -> Result<(), Error> {
 
     // ~ validate whether we successfully sent the messages to all the target partitions
     for r in rs {
-        if let Some(e) = r.error {
+        if let Err(e) = r.offset {
             return Err(From::from(e));
         }
     }
@@ -423,7 +423,7 @@ fn produce_consume_integration(cfg: &Config) -> Result<(), Error> {
     // `needle`, and counts the number of messages per partition
     // retrieved.
     fn verify_messages(client: &mut KafkaClient,
-                       start_offsets: HashMap<String, Vec<kafka::utils::PartitionOffset>>,
+                       start_offsets: HashMap<String, Vec<PartitionOffset>>,
                        needle: &[u8])
                        -> kafka::error::Result<HashMap<String, usize>>
     {
