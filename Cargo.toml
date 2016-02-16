@@ -9,9 +9,10 @@ log = "*"
 env_logger = "*"
 byteorder = "*"
 stopwatch = "*"
+time = "*"
 
 [dependencies.kafka]
-#path = "../kafka-rust"
+# path = "../kafka-rust"
 git = "https://github.com/spicavigo/kafka-rust.git"
 branch = "master"
 

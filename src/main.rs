@@ -1,3 +1,4 @@
+extern crate time;
 extern crate kafka;
 extern crate getopts;
 #[macro_use]
@@ -9,10 +10,11 @@ extern crate stopwatch;
 use std::cmp;
 use std::collections::HashMap;
 use std::env;
-use std::iter::repeat;
 use std::str;
+use std::thread;
 
-use kafka::client::{KafkaClient, Compression};
+use kafka::client::{KafkaClient, Compression, FetchOffset, FetchPartition, PartitionOffset};
+use kafka::consumer::Consumer;
 use stopwatch::Stopwatch;
 
 fn main() {
@@ -29,10 +31,11 @@ fn main() {
     for cmd in cmds {
         let cmd: &str = &cmd;
         let res = match cmd {
-            "dump-offsets" => print_offsets(&cfg),
+            "follow-offsets" => follow_offsets(&cfg),
+            "dump-offsets" => dump_offsets(&cfg),
             "produce" => produce_data(&cfg),
             "consume" => consume_data(&cfg),
-            "test-produce-consume-integration" => test_produce_consume_integration(&cfg),
+            "produce-consume-integration" => produce_consume_integration(&cfg),
             _ => Err(Error::Other(format!("unknown command: {}", cmd))),
         };
         if let Err(e) = res {
@@ -51,7 +54,12 @@ struct Config {
 
     compression: Compression,
 
+    fetch_max_wait_time: i32,
+    fetch_min_bytes: i32,
+    fetch_max_bytes: i32,
+
     dump_consumed: bool,
+    dump_offset: FetchOffset,
 }
 
 impl Config {
@@ -65,7 +73,11 @@ impl Config {
         opts.optopt("", "produce-msgs-per-topic", "Produce N messages per topic", "N");
         opts.optopt("", "produce-bytes-per-msg", "Produce N bytes per message", "N");
         opts.optopt("", "compression", "Set compression type [NONE, GZIP, SNAPPY]", "TYPE");
+        opts.optflag("", "earliest-offset", "When dumping offsets use the earliest");
         opts.optflag("", "dump-consumed", "Print consumed message as utf8 strings");
+        opts.optopt("", "fetch-max-wait-time", "Set the fetch-max-wait-time", "MILLIS");
+        opts.optopt("", "fetch-min-bytes", "Set the fetch-min-bytes", "N");
+        opts.optopt("", "fetch-max-bytes", "Set the fetch-max-bytes (per partition!)", "N");
         let matches = match opts.parse(&args[1..]) {
             Ok(m) => m,
             Err(e) => return Err(e.to_string()),
@@ -103,9 +115,29 @@ impl Config {
                 }
             },
             dump_consumed: matches.opt_present("dump-consumed"),
+            fetch_max_wait_time:
+            try!(matches.opt_str("fetch-max-wait-time")
+                 .unwrap_or_else(|| format!("{}", kafka::client::DEFAULT_FETCH_MAX_WAIT_TIME))
+                 .parse::<i32>()
+                 .map_err(|e| format!("not a number: {}", e))),
+            fetch_min_bytes:
+            try!(matches.opt_str("fetch-min-bytes")
+                 .unwrap_or_else(|| format!("{}", kafka::client::DEFAULT_FETCH_MIN_BYTES))
+                 .parse::<i32>()
+                 .map_err(|e| format!("not a number: {}", e))),
+            fetch_max_bytes:
+            try!(matches.opt_str("fetch-max-bytes")
+                 .unwrap_or_else(|| format!("{}", kafka::client::DEFAULT_FETCH_MAX_BYTES_PER_PARTITION))
+                 .parse::<i32>()
+                 .map_err(|e| format!("not a number: {}", e))),
+            dump_offset: if matches.opt_present("earliest-offset") {
+                FetchOffset::Earliest
+            } else {
+                FetchOffset::Latest
+            },
         };
         let cmds = if matches.free.is_empty() {
-            vec!["offsets".to_owned()]
+            vec!["dump-offsets".to_owned()]
         } else {
             matches.free
         };
@@ -114,11 +146,27 @@ impl Config {
 
     fn new_client(&self) -> Result<KafkaClient, Error> {
         let mut client = KafkaClient::new(self.brokers.iter().cloned().collect());
+
         client.set_compression(self.compression);
-        if self.topics.is_empty() {
-            try!(client.load_metadata_all());
-        } else {
-            try!(client.load_metadata(self.topics.iter().cloned().collect()));
+        debug!("Set client compression: {:?}", self.compression);
+
+        client.set_fetch_max_wait_time(self.fetch_max_wait_time);
+        debug!("Set client fetch-max-wait-time: {:?}", self.fetch_max_wait_time);
+
+        client.set_fetch_min_bytes(self.fetch_min_bytes);
+        debug!("Set client fetch-min-bytes: {:?}", self.fetch_min_bytes);
+
+        client.set_fetch_max_bytes_per_partition(self.fetch_max_bytes);
+        debug!("Set client fetch-max-bytes-per-partition: {:?}", self.fetch_max_bytes);
+        try!(client.load_metadata_all());
+
+        if !self.topics.is_empty() {
+            let client_topics = client.topics();
+            for topic in &self.topics {
+                if !client_topics.contains(topic) {
+                    return Err(Error::Other(format!("No such topic: {}", topic)));
+                }
+            }
         }
         Ok(client)
     }
@@ -138,12 +186,61 @@ impl<'a> From<&'a str> for Error {
     fn from(s: &'a str) -> Self { Error::Other(s.to_owned()) }
 }
 
-fn print_offsets(cfg: &Config) -> Result<(), Error> {
-    debug!("printing offsets for: {:?}", cfg);
+fn follow_offsets(cfg: &Config)-> Result<(), Error> {
+    use std::io::stdout;
+    use std::fmt::Write;
+
+    debug!("following offsets for: {:?}", cfg);
+
+
+    if cfg.topics.len() != 1 {
+        return Err(Error::from("Following offsets is only supported for exactly one topic!"));
+    }
 
     let mut client = try!(cfg.new_client());
-    let topics = client.topic_partitions.keys().cloned().collect();
-    let offs = try!(client.fetch_offsets(topics, -1));
+
+    let mut out = String::with_capacity(160);
+    let mut stdout = stdout();
+    let topic = &cfg.topics[0];
+
+    loop {
+        let now = time::now();
+        let mut offs = try!(client.fetch_topic_offsets(topic, cfg.dump_offset));
+        offs.sort_by(|a, b| a.partition.cmp(&b.partition));
+        debug!("fetched offsets: {:?}", offs);
+
+        out.clear();
+        let _ = write!(out, "{}", now.strftime("%H:%M:%S").unwrap());
+        for off in offs {
+            let _ = match off.offset {
+                Ok(o) => write!(out, " {:>10}", o),
+                Err(_) => write!(out, " {:>10}", "ERR"),
+            };
+        }
+        let _ = write!(out, "\n");
+
+        {
+            use std::io::Write;
+            let _ = stdout.write_all(out.as_bytes());
+        }
+
+        {
+            use std::time;
+            thread::sleep(time::Duration::from_millis(1000));
+        }
+    }
+}
+
+fn dump_offsets(cfg: &Config) -> Result<(), Error> {
+    debug!("dumping offsets for: {:?}", cfg);
+
+    let mut client = try!(cfg.new_client());
+    let topics: Vec<String> = if cfg.topics.is_empty() {
+        client.topics().names().map(ToOwned::to_owned).collect()
+    } else {
+        cfg.topics.clone()
+    };
+    let offs = try!(client.fetch_offsets(&topics, cfg.dump_offset));
     if offs.is_empty() {
         return Ok(());
     }
@@ -161,121 +258,114 @@ fn print_offsets(cfg: &Config) -> Result<(), Error> {
 
         offsets.sort_by(|a, b| a.partition.cmp(&b.partition));
         for off in offsets {
-            println!("{:3$} {:>2} {:>12}", topic, off.partition, off.offset, topic_width);
+            println!("{:3$} {:>2} {:>12}", topic, off.partition, off.offset.unwrap_or(-1), topic_width);
         }
     }
     Ok(())
 }
 
 fn produce_data(cfg: &Config) -> Result<(), Error> {
+    use std::borrow::ToOwned;
+    use kafka::producer::{Producer, Record};
+
     debug!("producing data to: {:?}", cfg);
 
-    let msg: Vec<u8> = (0..cfg.produce_bytes_per_msg).map(|v| (v % 256) as u8).collect();
+    let msg: Vec<u8> = (0..cfg.produce_bytes_per_msg)
+        .map(|v| (v % 256) as u8)
+        .collect();
 
-    let mut client = try!(cfg.new_client());
+    let client = try!(cfg.new_client());
+    let topics: Vec<String> =
+        if cfg.topics.is_empty() {
+            client.topics().names().map(ToOwned::to_owned).collect()
+        } else {
+            cfg.topics.clone()
+        };
 
-    let msg_total = cfg.produce_msg_per_topic as usize * client.topic_partitions.len();
+    let msg_total = cfg.produce_msg_per_topic as usize * topics.len();
     let mut data = Vec::with_capacity(msg_total);
-    for _ in 0..cfg.produce_msg_per_topic {
-        for topic in client.topic_partitions.keys().cloned() {
-            data.push(kafka::utils::ProduceMessage{
-                topic: topic,
-                message: msg.clone(),
-            });
+    for topic in &topics {
+        for _ in 0 .. cfg.produce_msg_per_topic {
+            data.push(Record::from_value(&topic, &*msg));
         }
     }
-    let sw = Stopwatch::start_new();
-    //try!(client.send_messages(-1, 1000, data));
-    try!(client.send_messages(0, 0, data));
-    let elapsed_ms = sw.elapsed_ms();
-    debug!("Sent {} messages in {}ms ==> {:.2} msg/s",
-           msg_total, elapsed_ms, (1000 * msg_total) as f64 / elapsed_ms as f64);
+    debug!("data.len() = {}", data.len());
 
+    let mut producer = try!(Producer::from_client(client)
+                            .with_ack_timeout(1000)
+                            .with_required_acks(-1)
+                            .create());
+    let sw = Stopwatch::start_new();
+    let rs = try!(producer.send_all(&data));
+    let elapsed_ms = sw.elapsed_ms();
+    debug!("Sent {} messages in {}ms ==> {:.2} msg/s ==> {:.2} bytes/s",
+           msg_total, elapsed_ms,
+           (1000 * msg_total) as f64 / elapsed_ms as f64,
+           (1000 * msg_total * msg.len()) as f64 / elapsed_ms as f64);
+
+    // ~ validate whether we successfully sent the messages to all the target partitions
+    for r in rs {
+        if let Err(e) = r.offset {
+            return Err(From::from(e));
+        }
+    }
+
+    // ~ everything fine :)
     Ok(())
 }
 
 fn consume_data(cfg: &Config) -> Result<(), Error> {
     let mut client = try!(cfg.new_client());
 
-    let topic_partitions = client.topic_partitions.clone();
+    for topic in &cfg.topics {
+        let mut consumer = try!(Consumer::from_client(client,
+                                                      "monchan".to_owned(),
+                                                      topic.to_owned())
+                                .with_fallback_offset(FetchOffset::Earliest)
+                                .create());
 
-    for (topic, partitions) in topic_partitions {
-        let mut offsets: Vec<i64> = {
-            let max_id = partitions.iter().fold(0, |a, b| cmp::max(a, *b));
-            repeat(0).take((max_id + 1) as usize).collect()
-        };
-        // ~ initialize start offsets
-        {
-            let start_offset = try!(client.fetch_topic_offset(topic.clone(), -2));
-            match start_offset.get(&topic) {
-                Some(poffs) => {
-                    for poff in poffs {
-                        offsets[poff.partition as usize] = poff.offset;
-                        debug!("{}:{} => start_offset: {}",
-                               &topic, poff.partition, poff.offset);
-                    }
-                },
-                None => {
-                    debug!("Could not determined earliest offset for topic: {}",
-                           topic.clone());
-                    continue;
-                }
-            };
-        }
-
+        // ~ now request all the data from the topic
         let sw = Stopwatch::start_new();
-        let (mut n_bytes, mut n_msgs, mut n_errors) = (0u64, 0u64, 0u64);
+        let (mut n_bytes, mut n_msgs, n_errors) = (0u64, 0u64, 0u64);
         loop {
-            let mut reqs = Vec::with_capacity(partitions.len());
-            for p in &partitions {
-                reqs.push(kafka::utils::TopicPartitionOffset{
-                    topic: topic.clone(),
-                    partition: *p,
-                    offset: offsets[*p as usize],
-                });
-            }
-
-            let msgs = try!(client.fetch_messages_multi(reqs));
-            if msgs.is_empty() {
+            trace!("Issueing fetch_messages request");
+            let ms = try!(consumer.poll());
+            if ms.is_empty() {
                 break;
             }
 
-            for msg in msgs {
-                trace!("msg.topic: {}, msg.partition: {}, msg.offset: {}, msg.error: {:?}",
-                       msg.topic, msg.partition, msg.offset, msg.error);
+            for msg in ms.iter().flat_map(|m| m.messages()) {
+                let msg_val = msg.value;
 
-                match msg.error {
-                    Some(_) => {
-                        n_errors += 1;
+                if cfg.dump_consumed {
+                    match str::from_utf8(msg_val) {
+                        Ok(s) => println!("{}", s),
+                        Err(e) => warn!("Failed decoding message as utf8 string: {}", e),
                     }
-                    None => {
-                        if cfg.dump_consumed {
-                            match str::from_utf8(&msg.message) {
-                                Ok(s) => println!("{}", s),
-                                Err(e) => warn!("Failed decoding message as utf8 string: {}", e),
-                            }
-                        }
+                }
 
-                        n_msgs += 1;
-                        n_bytes += msg.message.len() as u64;
-                        offsets[msg.partition as usize] += 1;
-                        if n_msgs % 100000 == 0 {
-                            let elapsed_ms = sw.elapsed_ms();
-                            let total = n_msgs + n_errors;
-                            debug!("topic: {}, total msgs: {} (errors: {}), bytes: {}, elapsed: {}ms ==> msg/s: {:.2}",
-                                   topic, total, n_errors, n_bytes, elapsed_ms,
-                                   (1000 * total) as f64 / elapsed_ms as f64);
-                        }
-                    }
+                n_msgs += 1;
+                n_bytes += msg_val.len() as u64;
+
+                if n_msgs % 500_000 == 0 {
+                    let elapsed_ms = sw.elapsed_ms();
+                    let total = n_msgs + n_errors;
+                    debug!("topic: {}, total msgs: {} (errors: {}), bytes: {}, elapsed: {}ms ==> msg/s: {:.2} (bytes/s: {:.2})",
+                           topic, total, n_errors, n_bytes, elapsed_ms,
+                           (1000 * total) as f64 / elapsed_ms as f64,
+                           (1000 * n_bytes) as f64 / elapsed_ms as f64);
                 }
             }
         }
         let elapsed_ms = sw.elapsed_ms();
 
         let total = n_msgs + n_errors;
-        debug!("topic: {}, total msgs: {} (errors: {}), bytes: {}, elapsed: {}ms ==> msg/s: {:.2}",
+        debug!("topic: {}, total msgs: {} (errors: {}), bytes: {}, elapsed: {}ms ==> msg/s: {:.2} (bytes/s: {:.2})",
                topic, total, n_errors, n_bytes, elapsed_ms,
-               (1000 * total) as f64 / elapsed_ms as f64);
+               (1000 * total) as f64 / elapsed_ms as f64,
+               (1000 * n_bytes) as f64 / elapsed_ms as f64);
+
+        client = consumer.client();
     }
     Ok(())
 }
@@ -283,90 +373,97 @@ fn consume_data(cfg: &Config) -> Result<(), Error> {
 /// Produces messages to a topic and reads them back. Verifying none
 /// has been lost. Assumes no concurrent producers to the target
 /// topic.
-fn test_produce_consume_integration(cfg: &Config) -> Result<(), Error> {
-
-    fn do_test(client: &mut KafkaClient, topics: &[String], msg_per_topic: usize, sent_msg: &[u8]) -> Result<(), Error> {
-        // ~ the data set will be sending
-        let msgs = {
-            let mut msgs = Vec::with_capacity(topics.len() * msg_per_topic as usize);
-            for topic in topics {
-                for _ in 0..msg_per_topic {
-                    msgs.push(kafka::utils::ProduceMessage { topic: topic.to_owned(), message: sent_msg.to_owned() });
-                }
-            }
-            msgs
-        };
+fn produce_consume_integration(cfg: &Config) -> Result<(), Error> {
+    fn do_test(mut client: KafkaClient, topics: &[String], msg_per_topic: usize, sent_msg: &[u8])
+               -> Result<(), Error>
+    {
+        use kafka::producer::{Producer, Record};
 
         // ~ remeber the current offsets
-        let init_offsets = try!(client.fetch_offsets(topics.iter().cloned().collect(), -1));
+        let init_offsets = try!(client.fetch_offsets(topics, FetchOffset::Latest));
         trace!("init_offsets: {:#?}", init_offsets);
 
-        // ~ send the messages
-        let n_msgs = msgs.len();
-        try!(client.send_messages(1, 1000, msgs));
-        debug!("Sent {} messages", n_msgs);
+        // ~ produce data to the target topics
+        {
+            // ~ the data set will be sending
+            let msgs = {
+                let mut msgs = Vec::with_capacity(topics.len() * msg_per_topic as usize);
+                for topic in topics {
+                    for _ in 0..msg_per_topic {
+                        msgs.push(Record::from_value(topic, sent_msg));
+                    }
+                }
+                msgs
+            };
 
-        let fetched_msgs = try!(fetch_all_messages(client, init_offsets));
-        debug!("Fetched {} messages", fetched_msgs.len());
-        let mut msgs_per_topic = HashMap::with_capacity(topics.len());
-        for msg in fetched_msgs {
-            assert!(msg.error.is_none());
-            assert_eq!(msg.message, sent_msg);
-            if let Some(v) = msgs_per_topic.get_mut(&msg.topic) {
-                *v = *v + 1;
-                continue;
-            }
-            msgs_per_topic.insert(msg.topic.clone(), 1);
+            // ~ send the messages
+            let mut producer = try!(Producer::from_client(client)
+                                    .with_required_acks(1)
+                                    .with_ack_timeout(1000)
+                                    .create());
+            try!(producer.send_all(&msgs));
+            debug!("Sent {} messages", msgs.len());
+
+            // ~ get back the client
+            client = producer.client();
         }
+
+        // ~ verify the messages
+        let msgs_per_topic = try!(verify_messages(&mut client, init_offsets, sent_msg));
         for (_, v) in msgs_per_topic {
             assert_eq!(v, msg_per_topic);
         }
-
         debug!("Verified all fetched messages");
+
         Ok(())
     }
 
-    // just a hacky way to consume all available message for the topic
-    // given partitions as of the specified offsets
-    fn fetch_all_messages(client: &mut KafkaClient,
-                          start_offsets: HashMap<String, Vec<kafka::utils::PartitionOffset>>)
-                          -> kafka::error::Result<Vec<kafka::utils::TopicMessage>> {
+    // consumes all available message for the topic partitions as of
+    // the specified offsets, verifies they equals to the specified
+    // `needle`, and counts the number of messages per partition
+    // retrieved.
+    fn verify_messages(client: &mut KafkaClient,
+                       start_offsets: HashMap<String, Vec<PartitionOffset>>,
+                       needle: &[u8])
+                       -> kafka::error::Result<HashMap<String, usize>>
+    {
         let mut offs = HashMap::new();
-        for (topic, pos) in start_offsets {
+        for (topic, pos) in &start_offsets {
             for po in pos {
                 offs.insert(format!("{}-{}", topic, po.partition),
-                            kafka::utils::TopicPartitionOffset {
-                                topic: topic.clone(),
-                                partition: po.partition,
-                                offset: po.offset,
-                            });
+                            FetchPartition::new(&topic, po.partition, po.offset.clone().unwrap()));
             }
         }
 
-        let mut resp = Vec::new();
+        let mut counts = HashMap::with_capacity(start_offsets.len());
+        for (topic, _) in &start_offsets {
+            counts.insert(topic.to_owned(), 0);
+        }
         loop {
             // ~ now fetch the messages and verify we could read them back
-            let mut reqs = vec![];
-            for (_, off) in &offs {
-                reqs.push(kafka::utils::TopicPartitionOffset {
-                    topic: off.topic.clone(),
-                    partition: off.partition,
-                    offset: off.offset,
-                });
-            }
-
-            trace!("Fetching messages for: {:#?}", reqs);
-            match client.fetch_messages_multi(reqs) {
-                Err(e) => return Err(e),
-                Ok(ref msgs) if msgs.is_empty() => return Ok(resp),
-                Ok(msgs) => {
-                    for msg in msgs {
-                        offs.get_mut(&format!("{}-{}", msg.topic, msg.partition)).unwrap().offset += 1;
-                        resp.push(msg);
+            let mut had_messages = false;
+            for r in try!(client.fetch_messages(offs.values())).iter() {
+                for t in r.topics() {
+                    for p in t.partitions() {
+                        assert!(p.data().is_ok());
+                        let msgs = p.data().as_ref().unwrap().messages();
+                        for m in msgs.iter() {
+                            assert_eq!(m.value, needle);
+                        }
+                        if msgs.len() > 0 {
+                            had_messages = true;
+                            *counts.get_mut(t.topic()).unwrap() += msgs.len();
+                            offs.get_mut(&format!("{}-{}", t.topic(), p.partition())).unwrap().offset =
+                                msgs.last().unwrap().offset + 1;
+                        }
                     }
                 }
             }
+            if !had_messages {
+                break;
+            }
         }
+        Ok(counts)
     }
 
     // ~ --------------------------------------------------------------
@@ -378,9 +475,12 @@ fn test_produce_consume_integration(cfg: &Config) -> Result<(), Error> {
     // ~ make sure all of the topics we will be sending messages to do exist
     let mut client = try!(cfg.new_client());
     try!(client.load_metadata_all());
-    for topic in &cfg.topics {
-        if !client.topic_partitions.contains_key(topic) {
-            return Err(Error::Other(format!("Non existent topic: {}", topic)));
+    {
+        let client_topics = client.topics();
+        for topic in &cfg.topics {
+            if !client_topics.contains(topic) {
+                return Err(Error::Other(format!("Non existent topic: {}", topic)));
+            }
         }
     }
 
@@ -388,7 +488,7 @@ fn test_produce_consume_integration(cfg: &Config) -> Result<(), Error> {
     let s = b"hello, world";
     let sent_msg: Vec<u8> = s.into_iter().cycle().take(cfg.produce_bytes_per_msg as usize).cloned().collect();
     // ~ run the test
-    try!(do_test(&mut client, &cfg.topics, cfg.produce_msg_per_topic as usize, &sent_msg));
+    try!(do_test(client, &cfg.topics, cfg.produce_msg_per_topic as usize, &sent_msg));
 
     Ok(())
 }
