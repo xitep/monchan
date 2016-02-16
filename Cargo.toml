@@ -14,7 +14,7 @@ time = "*"
 [dependencies.kafka]
 # path = "../kafka-rust"
 git = "https://github.com/spicavigo/kafka-rust.git"
-branch = "branch-0.2.x"
+branch = "master"
 
 [profile.release]
 opt-level = 3
