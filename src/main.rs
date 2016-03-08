@@ -57,6 +57,7 @@ struct Config {
     fetch_max_wait_time: i32,
     fetch_min_bytes: i32,
     fetch_max_bytes: i32,
+    fetch_crc_validation: bool,
 
     dump_consumed: bool,
     dump_offset: FetchOffset,
@@ -78,6 +79,7 @@ impl Config {
         opts.optopt("", "fetch-max-wait-time", "Set the fetch-max-wait-time", "MILLIS");
         opts.optopt("", "fetch-min-bytes", "Set the fetch-min-bytes", "N");
         opts.optopt("", "fetch-max-bytes", "Set the fetch-max-bytes (per partition!)", "N");
+        opts.optflag("", "fetch-no-crc-validation", "Do not validate checksums of fetched messages");
         let matches = match opts.parse(&args[1..]) {
             Ok(m) => m,
             Err(e) => return Err(e.to_string()),
@@ -130,6 +132,7 @@ impl Config {
                  .unwrap_or_else(|| format!("{}", kafka::client::DEFAULT_FETCH_MAX_BYTES_PER_PARTITION))
                  .parse::<i32>()
                  .map_err(|e| format!("not a number: {}", e))),
+            fetch_crc_validation: !matches.opt_present("fetch-no-crc-validation"),
             dump_offset: if matches.opt_present("earliest-offset") {
                 FetchOffset::Earliest
             } else {
@@ -158,8 +161,11 @@ impl Config {
 
         client.set_fetch_max_bytes_per_partition(self.fetch_max_bytes);
         debug!("Set client fetch-max-bytes-per-partition: {:?}", self.fetch_max_bytes);
-        try!(client.load_metadata_all());
 
+        client.set_fetch_crc_validation(self.fetch_crc_validation);
+        debug!("Set client fetch-crc-validation: {}", self.fetch_crc_validation);
+
+        try!(client.load_metadata_all());
         if !self.topics.is_empty() {
             let client_topics = client.topics();
             for topic in &self.topics {
