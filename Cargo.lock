@@ -56,8 +56,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "fnv"
+version = "1.0.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+
+[[package]]
 name = "gcc"
-version = "0.3.25"
+version = "0.3.26"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 
 [[package]]
@@ -68,11 +73,12 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 [[package]]
 name = "kafka"
 version = "0.3.0"
-source = "git+https://github.com/spicavigo/kafka-rust.git#924feff3a1666f3b51a558142b77de0ed5635b62"
+source = "git+https://github.com/spicavigo/kafka-rust.git#ac4b0b3276d3bf97b263e06f09f852e4f2d50f8a"
 dependencies = [
  "byteorder 0.4.2 (registry+https://github.com/rust-lang/crates.io-index)",
  "crc 1.2.0 (registry+https://github.com/rust-lang/crates.io-index)",
  "flate2 0.2.13 (registry+https://github.com/rust-lang/crates.io-index)",
+ "fnv 1.0.2 (registry+https://github.com/rust-lang/crates.io-index)",
  "log 0.3.5 (registry+https://github.com/rust-lang/crates.io-index)",
  "ref_slice 1.0.0 (registry+https://github.com/rust-lang/crates.io-index)",
  "snappy 0.3.0 (registry+https://github.com/rust-lang/crates.io-index)",
@@ -118,7 +124,7 @@ name = "miniz-sys"
 version = "0.1.7"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 dependencies = [
- "gcc 0.3.25 (registry+https://github.com/rust-lang/crates.io-index)",
+ "gcc 0.3.26 (registry+https://github.com/rust-lang/crates.io-index)",
  "libc 0.2.8 (registry+https://github.com/rust-lang/crates.io-index)",
 ]
 
