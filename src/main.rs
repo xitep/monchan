@@ -13,7 +13,8 @@ use std::env;
 use std::str;
 use std::thread;
 
-use kafka::client::{KafkaClient, Compression, FetchOffset, FetchPartition, PartitionOffset};
+use kafka::client::{KafkaClient, Compression, FetchOffset,
+                    FetchPartition, PartitionOffset, RequiredAcks};
 use kafka::consumer::Consumer;
 use stopwatch::Stopwatch;
 
@@ -299,7 +300,7 @@ fn produce_data(cfg: &Config) -> Result<(), Error> {
 
     let mut producer = try!(Producer::from_client(client)
                             .with_ack_timeout(1000)
-                            .with_required_acks(-1)
+                            .with_required_acks(RequiredAcks::All)
                             .create());
     let sw = Stopwatch::start_new();
     let rs = try!(producer.send_all(&data));
@@ -324,9 +325,8 @@ fn consume_data(cfg: &Config) -> Result<(), Error> {
     let mut client = try!(cfg.new_client());
 
     for topic in &cfg.topics {
-        let mut consumer = try!(Consumer::from_client(client,
-                                                      "monchan".to_owned(),
-                                                      topic.to_owned())
+        let mut consumer = try!(Consumer::from_client(client)
+                                .with_topic(topic.to_owned())
                                 .with_fallback_offset(FetchOffset::Earliest)
                                 .create());
 
@@ -404,7 +404,7 @@ fn produce_consume_integration(cfg: &Config) -> Result<(), Error> {
 
             // ~ send the messages
             let mut producer = try!(Producer::from_client(client)
-                                    .with_required_acks(1)
+                                    .with_required_acks(RequiredAcks::One)
                                     .with_ack_timeout(1000)
                                     .create());
             try!(producer.send_all(&msgs));
