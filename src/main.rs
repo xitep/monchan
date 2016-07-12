@@ -7,11 +7,9 @@ extern crate env_logger;
 extern crate byteorder;
 extern crate stopwatch;
 
-use std::cmp;
 use std::collections::HashMap;
 use std::env;
 use std::str;
-use std::thread;
 
 use kafka::client::{KafkaClient, Compression, FetchOffset,
                     FetchPartition, PartitionOffset, RequiredAcks};
@@ -32,8 +30,6 @@ fn main() {
     for cmd in cmds {
         let cmd: &str = &cmd;
         let res = match cmd {
-            "follow-offsets" => follow_offsets(&cfg),
-            "dump-offsets" => dump_offsets(&cfg),
             "produce" => produce_data(&cfg),
             "consume" => consume_data(&cfg),
             "produce-consume-integration" => produce_consume_integration(&cfg),
@@ -191,84 +187,6 @@ impl From<kafka::error::Error> for Error {
 
 impl<'a> From<&'a str> for Error {
     fn from(s: &'a str) -> Self { Error::Other(s.to_owned()) }
-}
-
-fn follow_offsets(cfg: &Config)-> Result<(), Error> {
-    use std::io::stdout;
-    use std::fmt::Write;
-
-    debug!("following offsets for: {:?}", cfg);
-
-
-    if cfg.topics.len() != 1 {
-        return Err(Error::from("Following offsets is only supported for exactly one topic!"));
-    }
-
-    let mut client = try!(cfg.new_client());
-
-    let mut out = String::with_capacity(160);
-    let mut stdout = stdout();
-    let topic = &cfg.topics[0];
-
-    loop {
-        let now = time::now();
-        let mut offs = try!(client.fetch_topic_offsets(topic, cfg.dump_offset));
-        offs.sort_by(|a, b| a.partition.cmp(&b.partition));
-        debug!("fetched offsets: {:?}", offs);
-
-        out.clear();
-        let _ = write!(out, "{}", now.strftime("%H:%M:%S").unwrap());
-        for off in offs {
-            let _ = match off.offset {
-                Ok(o) => write!(out, " {:>10}", o),
-                Err(_) => write!(out, " {:>10}", "ERR"),
-            };
-        }
-        let _ = write!(out, "\n");
-
-        {
-            use std::io::Write;
-            let _ = stdout.write_all(out.as_bytes());
-        }
-
-        {
-            use std::time;
-            thread::sleep(time::Duration::from_millis(1000));
-        }
-    }
-}
-
-fn dump_offsets(cfg: &Config) -> Result<(), Error> {
-    debug!("dumping offsets for: {:?}", cfg);
-
-    let mut client = try!(cfg.new_client());
-    let topics: Vec<String> = if cfg.topics.is_empty() {
-        client.topics().names().map(ToOwned::to_owned).collect()
-    } else {
-        cfg.topics.clone()
-    };
-    let offs = try!(client.fetch_offsets(&topics, cfg.dump_offset));
-    if offs.is_empty() {
-        return Ok(());
-    }
-
-    let topic_width = cmp::max(30, offs.keys().map(|s| s.len()).max().unwrap() + 2);
-    println!("{:3$} {:>10} {:>12}", "topic", "partition", "offset", topic_width-8);
-    println!("{:3$} {:>10} {:>12}", "=====", "=========", "======", topic_width-8);
-
-    let mut offs: Vec<_> = offs.into_iter().collect();
-    offs.sort_by(|a, b| a.0.cmp(&b.0));
-    let mut i = 0;
-    for (topic, mut offsets) in offs {
-        if i != 0 { println!(""); }
-        i += 1;
-
-        offsets.sort_by(|a, b| a.partition.cmp(&b.partition));
-        for off in offsets {
-            println!("{:3$} {:>2} {:>12}", topic, off.partition, off.offset.unwrap_or(-1), topic_width);
-        }
-    }
-    Ok(())
 }
 
 fn produce_data(cfg: &Config) -> Result<(), Error> {
