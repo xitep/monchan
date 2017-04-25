@@ -10,10 +10,13 @@ extern crate stopwatch;
 use std::collections::HashMap;
 use std::env;
 use std::str;
+use std::time::Duration;
 
+use kafka::error::Error as KafkaError;
 use kafka::client::{KafkaClient, Compression, FetchOffset,
                     FetchPartition, PartitionOffset, RequiredAcks};
 use kafka::consumer::Consumer;
+use kafka::producer::{self, Producer};
 use stopwatch::Stopwatch;
 
 fn main() {
@@ -33,7 +36,12 @@ fn main() {
             "produce" => produce_data(&cfg),
             "consume" => consume_data(&cfg),
             "produce-consume-integration" => produce_consume_integration(&cfg),
-            _ => Err(Error::Other(format!("unknown command: {}", cmd))),
+            _ => Err(Error::Other(format!("unknown command: {} \
+                                           [supported: \
+                                           produce, \
+                                           consume, \
+                                           produce-consume-integration",
+                                          cmd))),
         };
         if let Err(e) = res {
             println!("Error: {:?}", e);
@@ -48,10 +56,12 @@ struct Config {
 
     produce_msg_per_topic: u32,
     produce_bytes_per_msg: u32,
+    produce_required_acks: RequiredAcks,
+    produce_ack_timeout: Duration,
 
     compression: Compression,
 
-    fetch_max_wait_time: i32,
+    fetch_max_wait_time: Duration,
     fetch_min_bytes: i32,
     fetch_max_bytes: i32,
     fetch_crc_validation: bool,
@@ -70,6 +80,8 @@ impl Config {
         opts.optopt("", "topics", "Specify topics (comma separated)", "TOPICS");
         opts.optopt("", "produce-msgs-per-topic", "Produce N messages per topic", "N");
         opts.optopt("", "produce-bytes-per-msg", "Produce N bytes per message", "N");
+        opts.optopt("", "produce-required-acks", "Required acks for produced messages [NONE, ONE, ALL]", "TYPE");
+        opts.optopt("", "produce-ack-timeout", "Allow acks to take this long", "MILLIS");
         opts.optopt("", "compression", "Set compression type [NONE, GZIP, SNAPPY]", "TYPE");
         opts.optflag("", "earliest-offset", "When dumping offsets use the earliest");
         opts.optflag("", "dump-consumed", "Print consumed message as utf8 strings");
@@ -104,6 +116,23 @@ impl Config {
                  .unwrap_or_else(|| "10".to_owned())
                  .parse::<u32>()
                  .map_err(|e| format!("not a number: {}", e))),
+            produce_required_acks: match matches.opt_str("produce-required-acks") {
+                None => RequiredAcks::All,
+                Some(s) => match s.trim() {
+                    "none" | "NONE" => RequiredAcks::None,
+                    "one" | "ONE" => RequiredAcks::One,
+                    "all" | "ALL" => RequiredAcks::All,
+                    _ => return Err(format!("Unknown required acks: {}", s)),
+                },
+            },
+            produce_ack_timeout: Duration::from_millis(
+                match matches.opt_str("produce-ack-timeout") {
+                    None => producer::DEFAULT_ACK_TIMEOUT_MILLIS,
+                    Some(s) => match s.parse::<u64>() {
+                        Ok(n) => n,
+                        Err(_) => return Err(format!("Not a number: {}", s)),
+                    }
+                }),
             compression: {
                 let s = matches.opt_str("compression").unwrap_or_else(|| "NONE".to_owned());
                 match s.trim() {
@@ -115,10 +144,11 @@ impl Config {
             },
             dump_consumed: matches.opt_present("dump-consumed"),
             fetch_max_wait_time:
-            try!(matches.opt_str("fetch-max-wait-time")
-                 .unwrap_or_else(|| format!("{}", kafka::client::DEFAULT_FETCH_MAX_WAIT_TIME))
-                 .parse::<i32>()
-                 .map_err(|e| format!("not a number: {}", e))),
+            Duration::from_millis(
+                try!(matches.opt_str("fetch-max-wait-time")
+                     .unwrap_or_else(|| format!("{}", kafka::client::DEFAULT_FETCH_MAX_WAIT_TIME_MILLIS))
+                     .parse::<u64>()
+                     .map_err(|e| format!("not a number: {}", e)))),
             fetch_min_bytes:
             try!(matches.opt_str("fetch-min-bytes")
                  .unwrap_or_else(|| format!("{}", kafka::client::DEFAULT_FETCH_MIN_BYTES))
@@ -150,7 +180,7 @@ impl Config {
         client.set_compression(self.compression);
         debug!("Set client compression: {:?}", self.compression);
 
-        client.set_fetch_max_wait_time(self.fetch_max_wait_time);
+        client.set_fetch_max_wait_time(self.fetch_max_wait_time).expect("invalid fetch max time");
         debug!("Set client fetch-max-wait-time: {:?}", self.fetch_max_wait_time);
 
         client.set_fetch_min_bytes(self.fetch_min_bytes);
@@ -191,7 +221,6 @@ impl<'a> From<&'a str> for Error {
 
 fn produce_data(cfg: &Config) -> Result<(), Error> {
     use std::borrow::ToOwned;
-    use kafka::producer::{Producer, Record};
 
     debug!("producing data to: {:?}", cfg);
 
@@ -211,17 +240,17 @@ fn produce_data(cfg: &Config) -> Result<(), Error> {
     let mut data = Vec::with_capacity(msg_total);
     for topic in &topics {
         for _ in 0 .. cfg.produce_msg_per_topic {
-            data.push(Record::from_value(&topic, &*msg));
+            data.push(producer::Record::from_value(&topic, &*msg));
         }
     }
     debug!("data.len() = {}", data.len());
 
     let mut producer = try!(Producer::from_client(client)
-                            .with_ack_timeout(1000)
-                            .with_required_acks(RequiredAcks::All)
+                            .with_ack_timeout(cfg.produce_ack_timeout)
+                            .with_required_acks(cfg.produce_required_acks)
                             .create());
     let sw = Stopwatch::start_new();
-    let rs = try!(producer.send_all(&data));
+    let cfrms = try!(producer.send_all(&data));
     let elapsed_ms = sw.elapsed_ms();
     debug!("Sent {} messages in {}ms ==> {:.2} msg/s ==> {:.2} bytes/s",
            msg_total, elapsed_ms,
@@ -229,9 +258,11 @@ fn produce_data(cfg: &Config) -> Result<(), Error> {
            (1000 * msg_total * msg.len()) as f64 / elapsed_ms as f64);
 
     // ~ validate whether we successfully sent the messages to all the target partitions
-    for r in rs {
-        if let Err(e) = r.offset {
-            return Err(From::from(e));
+    for cfrm in cfrms {
+        for pc in cfrm.partition_confirms {
+            if let Err(e) = pc.offset {
+                return Err(From::from(KafkaError::Kafka(e)));
+            }
         }
     }
 
@@ -242,7 +273,13 @@ fn produce_data(cfg: &Config) -> Result<(), Error> {
 fn consume_data(cfg: &Config) -> Result<(), Error> {
     let mut client = try!(cfg.new_client());
 
-    for topic in &cfg.topics {
+    let topics: Vec<String> =
+        if cfg.topics.is_empty() {
+            client.topics().names().map(ToOwned::to_owned).collect()
+        } else {
+            cfg.topics.clone()
+        };
+    for topic in &topics {
         let mut consumer = try!(Consumer::from_client(client)
                                 .with_topic(topic.to_owned())
                                 .with_fallback_offset(FetchOffset::Earliest)
@@ -289,7 +326,7 @@ fn consume_data(cfg: &Config) -> Result<(), Error> {
                (1000 * total) as f64 / elapsed_ms as f64,
                (1000 * n_bytes) as f64 / elapsed_ms as f64);
 
-        client = consumer.client();
+        client = consumer.into_client();
     }
     Ok(())
 }
@@ -298,11 +335,9 @@ fn consume_data(cfg: &Config) -> Result<(), Error> {
 /// has been lost. Assumes no concurrent producers to the target
 /// topic.
 fn produce_consume_integration(cfg: &Config) -> Result<(), Error> {
-    fn do_test(mut client: KafkaClient, topics: &[String], msg_per_topic: usize, sent_msg: &[u8])
+    fn do_test(mut client: KafkaClient, topics: &[String], cfg: &Config, sent_msg: &[u8])
                -> Result<(), Error>
     {
-        use kafka::producer::{Producer, Record};
-
         // ~ remeber the current offsets
         let init_offsets = try!(client.fetch_offsets(topics, FetchOffset::Latest));
         trace!("init_offsets: {:#?}", init_offsets);
@@ -311,10 +346,10 @@ fn produce_consume_integration(cfg: &Config) -> Result<(), Error> {
         {
             // ~ the data set will be sending
             let msgs = {
-                let mut msgs = Vec::with_capacity(topics.len() * msg_per_topic as usize);
+                let mut msgs = Vec::with_capacity(topics.len() * cfg.produce_msg_per_topic as usize);
                 for topic in topics {
-                    for _ in 0..msg_per_topic {
-                        msgs.push(Record::from_value(topic, sent_msg));
+                    for _ in 0..cfg.produce_msg_per_topic as usize {
+                        msgs.push(producer::Record::from_value(topic, sent_msg));
                     }
                 }
                 msgs
@@ -322,20 +357,20 @@ fn produce_consume_integration(cfg: &Config) -> Result<(), Error> {
 
             // ~ send the messages
             let mut producer = try!(Producer::from_client(client)
-                                    .with_required_acks(RequiredAcks::One)
-                                    .with_ack_timeout(1000)
+                                    .with_ack_timeout(cfg.produce_ack_timeout)
+                                    .with_required_acks(cfg.produce_required_acks)
                                     .create());
             try!(producer.send_all(&msgs));
             debug!("Sent {} messages", msgs.len());
 
             // ~ get back the client
-            client = producer.client();
+            client = producer.into_client();
         }
 
         // ~ verify the messages
         let msgs_per_topic = try!(verify_messages(&mut client, init_offsets, sent_msg));
         for (_, v) in msgs_per_topic {
-            assert_eq!(v, msg_per_topic);
+            assert_eq!(v, cfg.produce_msg_per_topic as usize);
         }
         debug!("Verified all fetched messages");
 
@@ -343,7 +378,7 @@ fn produce_consume_integration(cfg: &Config) -> Result<(), Error> {
     }
 
     // consumes all available message for the topic partitions as of
-    // the specified offsets, verifies they equals to the specified
+    // the specified offsets, verifies they equal to the specified
     // `needle`, and counts the number of messages per partition
     // retrieved.
     fn verify_messages(client: &mut KafkaClient,
@@ -355,7 +390,7 @@ fn produce_consume_integration(cfg: &Config) -> Result<(), Error> {
         for (topic, pos) in &start_offsets {
             for po in pos {
                 offs.insert(format!("{}-{}", topic, po.partition),
-                            FetchPartition::new(&topic, po.partition, po.offset.clone().unwrap()));
+                            FetchPartition::new(&topic, po.partition, po.offset));
             }
         }
 
@@ -412,7 +447,7 @@ fn produce_consume_integration(cfg: &Config) -> Result<(), Error> {
     let s = b"hello, world";
     let sent_msg: Vec<u8> = s.into_iter().cycle().take(cfg.produce_bytes_per_msg as usize).cloned().collect();
     // ~ run the test
-    try!(do_test(client, &cfg.topics, cfg.produce_msg_per_topic as usize, &sent_msg));
+    try!(do_test(client, &cfg.topics, cfg, &sent_msg));
 
     Ok(())
 }
